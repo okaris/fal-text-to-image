@@ -1,10 +1,12 @@
 from contextlib import contextmanager
-from functools import partial
+from functools import lru_cache, partial
 from typing import Literal
+from urllib.request import Request, urlopen
 
 from fal import cached, function
 from fal.toolkit import Image, ImageSizeInput, get_image_size
-from pydantic import BaseModel, Field
+from fal.toolkit.image import ImageSize
+from pydantic import BaseModel, Field, root_validator
 
 from text_to_image.runtime import SUPPORTED_SCHEDULERS, GlobalRuntime, filter_by
 
@@ -12,6 +14,30 @@ from text_to_image.runtime import SUPPORTED_SCHEDULERS, GlobalRuntime, filter_by
 @cached
 def load_session():
     return GlobalRuntime()
+
+
+@lru_cache(maxsize=64)
+def read_image_from_url(url: str):
+    import PIL
+    from fastapi import HTTPException
+
+    try:
+        with urlopen(
+            Request(
+                url,
+                headers={
+                    "User-Agent": "fal.ai/1.0",
+                },
+            )
+        ) as response:
+            image = PIL.Image.open(response).convert("RGB")
+    except:
+        import traceback
+
+        traceback.print_exc()
+        raise HTTPException(422, f"Could not load image from url: {url}")
+
+    return image
 
 
 class LoraWeight(BaseModel):
@@ -45,6 +71,43 @@ class Embedding(BaseModel):
         description="""
             The tokens to map the embedding weights to. Use these tokens in your prompts.
         """,
+    )
+
+
+class ControlNet(BaseModel):
+    path: str = Field(
+        description="URL or the path to the control net weights.",
+    )
+    image_url: str = Field(
+        description="URL of the image to be used as the control net.",
+        examples=[
+            "https://example.com/image.jpg",
+        ],
+    )
+    conditioning_scale: float = Field(
+        default=1.0,
+        description="""
+            The scale of the control net weight. This is used to scale the control net weight
+            before merging it with the base model.
+        """,
+        ge=0.0,
+        le=2.0,
+    )
+    start_percentage: float = Field(
+        default=0.0,
+        description="""
+            The percentage of the image to start applying the controlnet in terms of the total timesteps.
+        """,
+        ge=0.0,
+        le=1.0,
+    )
+    end_percentage: float = Field(
+        default=1.0,
+        description="""
+            The percentage of the image to end applying the controlnet in terms of the total timesteps.
+        """,
+        ge=0.0,
+        le=1.0,
     )
 
 
@@ -88,6 +151,19 @@ class InputParameters(BaseModel):
         description="""
             The embeddings to use for the image generation. Only a single embedding is supported at the moment.
             The embeddings will be used to map the tokens in the prompt to the embedding weights.
+        """,
+    )
+    controlnets: list[ControlNet] = Field(
+        default_factory=list,
+        description="""
+            The control nets to use for the image generation. You can use any number of control nets
+            and they will be applied to the image at the specified timesteps.
+        """,
+    )
+    controlnet_guess_mode: bool = Field(
+        default=False,
+        description="""
+            If set to true, the controlnet will be applied to only the conditional predictions.
         """,
     )
     seed: int | None = Field(
@@ -164,6 +240,16 @@ class InputParameters(BaseModel):
         description="If set to true, the safety checker will be enabled.",
     )
 
+    @root_validator
+    def check_controlnets(cls, values):
+        for controlnet in values.get("controlnets", []):
+            if controlnet.start_percentage >= controlnet.end_percentage:
+                raise ValueError(
+                    "'controlnet.start_percentage' must be smaller than 'controlnet.end_percentage'."
+                )
+
+        return values
+
 
 class OutputParameters(BaseModel):
     images: list[Image] = Field(description="The generated image files info.")
@@ -188,7 +274,7 @@ def wrap_excs():
         import traceback
 
         traceback.print_exc()
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(422, detail=str(exc))
 
 
 @function(
@@ -237,11 +323,13 @@ def generate_image(input: InputParameters) -> OutputParameters:
             input.model_name,
             loras=input.loras,
             embeddings=input.embeddings,
+            controlnets=input.controlnets,
             clip_skip=input.clip_skip,
             scheduler=input.scheduler,
             model_architecture=input.model_architecture,
         ) as pipe:
             seed = input.seed or torch.seed()
+
             kwargs = {
                 "prompt": input.prompt,
                 "negative_prompt": input.negative_prompt,
@@ -254,6 +342,28 @@ def generate_image(input: InputParameters) -> OutputParameters:
             if image_size is not None:
                 kwargs["width"] = image_size.width
                 kwargs["height"] = image_size.height
+
+            if input.controlnets:
+                kwargs["controlnet_guess_mode"] = input.controlnet_guess_mode
+                kwargs["controlnet_conditioning_scale"] = [
+                    x.conditioning_scale for x in input.controlnets
+                ]
+                kwargs["control_guidance_start"] = [
+                    x.start_percentage for x in input.controlnets
+                ]
+                kwargs["control_guidance_end"] = [
+                    x.end_percentage for x in input.controlnets
+                ]
+
+                # download all the controlnet images
+                controlnet_images = []
+                for controlnet in input.controlnets:
+                    # TODO replace with something that doesn't download the image every time
+                    controlnet_image = read_image_from_url(controlnet.image_url)
+
+                    controlnet_images.append(controlnet_image)
+
+                kwargs["image"] = controlnet_images
 
             print(f"Generating {input.num_images} images...")
             make_inference = partial(pipe, **kwargs)
@@ -268,6 +378,8 @@ def generate_image(input: InputParameters) -> OutputParameters:
 
             images = session.upload_images(filter_by(has_nsfw_concepts, result.images))
 
+            print("images", images)
+
             return OutputParameters(
                 images=images, seed=seed, has_nsfw_concepts=has_nsfw_concepts
             )
@@ -277,22 +389,38 @@ if __name__ == "__main__":
     # generate_image.on(serve=True, keep_alive=0)()
     input = InputParameters(
         model_name=f"stabilityai/stable-diffusion-xl-base-1.0",
+        # model_name="SG161222/Realistic_Vision_V2.0",
+        # model_name="runwayml/stable-diffusion-v1-5",
         prompt="Self-portrait oil painting, a beautiful cyborg with golden hair, 8k",
-        loras=[
-            LoraWeight(
-                path="https://huggingface.co/latent-consistency/lcm-lora-sdxl/resolve/main/pytorch_lora_weights.safetensors",
-                scale=1,
+        # loras=[
+        #     LoraWeight(
+        #         path="https://huggingface.co/latent-consistency/lcm-lora-sdxl/resolve/main/pytorch_lora_weights.safetensors",
+        #         scale=1,
+        #     )
+        # ],
+        # embeddings=[
+        #     Embedding(
+        #         path="https://storage.googleapis.com/falserverless/style_lora/pimento_embeddings.pti",
+        #         tokens=["<s0>", "<s1>"],
+        #     )
+        # ],
+        controlnets=[
+            ControlNet(
+                path="diffusers/controlnet-canny-sdxl-1.0",
+                # path = "lllyasviel/sd-controlnet-canny",
+                image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
+                conditioning_scale=1.0,
+                start_percentage=0.0,
+                end_percentage=1.0,
             )
         ],
-        embeddings=[
-            Embedding(
-                path="https://storage.googleapis.com/falserverless/style_lora/pimento_embeddings.pti",
-                tokens=["<s0>", "<s1>"],
-            )
-        ],
-        guidance_scale=0,
-        num_inference_steps=4,
-        num_images=4,
+        guidance_scale=7.5,
+        num_inference_steps=20,
+        num_images=1,
+        seed=42,
+        model_architecture="sdxl",
+        scheduler="Euler A",
+        image_size=ImageSize(width=1024, height=1024)
         # scheduler="LCM",
     )
     local = generate_image.on(serve=False, keep_alive=0)

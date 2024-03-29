@@ -74,6 +74,54 @@ class Embedding(BaseModel):
     )
 
 
+# make the ip adapter weight loader class
+class IPAdapter(BaseModel):
+    ip_adapter_image_url: str = Field(
+        description="URL of the image to be used as the IP adapter.",
+        examples=[
+            "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/ip_adapter_diner.png",
+        ],
+    )
+    path: str = Field(
+        description="URL or the path to the IP adapter weights.",
+        examples=[
+            "https://civitai.com/api/download/models/135931",
+        ],
+    )
+    model_subfolder: str | None = Field(
+        description="Subfolder in the model directory where the IP adapter weights are stored.",
+        examples=[
+            "sdxl_models",
+        ],
+    )
+    weight_name: str | None = Field(
+        description="Name of the weight file.",
+        examples=[
+            "ip-adapter-plus_sdxl_vit-h.safetensors",
+        ],
+    )
+    image_encoder_path: str | None = Field(
+        description="URL or the path to the image encoder weights.",
+        examples=[
+            "h94/IP-Adapter",
+        ],
+    )
+    image_encoder_subpath: str | None = Field(
+        description="Subpath to the image encoder weights.",
+        examples=[
+            "models/image_encoder",
+        ],
+    )
+    scale: float = Field(
+        default=1.0,
+        description="""
+            The scale of the IP adapter weight. This is used to scale the IP adapter weight
+            before merging it with the base model.
+        """,
+        ge=0.0,
+    )
+
+
 class ControlNet(BaseModel):
     path: str = Field(
         description="URL or the path to the control net weights.",
@@ -164,6 +212,12 @@ class InputParameters(BaseModel):
         default=False,
         description="""
             If set to true, the controlnet will be applied to only the conditional predictions.
+        """,
+    )
+    ip_adapter: IPAdapter | None = Field(
+        default=None,
+        description="""
+            The IP adapter to use for the image generation.
         """,
     )
     seed: int | None = Field(
@@ -324,6 +378,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
             loras=input.loras,
             embeddings=input.embeddings,
             controlnets=input.controlnets,
+            ip_adapter=input.ip_adapter,
             clip_skip=input.clip_skip,
             scheduler=input.scheduler,
             model_architecture=input.model_architecture,
@@ -365,6 +420,11 @@ def generate_image(input: InputParameters) -> OutputParameters:
 
                 kwargs["image"] = controlnet_images
 
+            if input.ip_adapter:
+                kwargs["ip_adapter_image"] = read_image_from_url(
+                    input.ip_adapter.ip_adapter_image_url
+                )
+
             print(f"Generating {input.num_images} images...")
             make_inference = partial(pipe, **kwargs)
 
@@ -404,16 +464,24 @@ if __name__ == "__main__":
         #         tokens=["<s0>", "<s1>"],
         #     )
         # ],
-        controlnets=[
-            ControlNet(
-                path="diffusers/controlnet-canny-sdxl-1.0",
-                # path = "lllyasviel/sd-controlnet-canny",
-                image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
-                conditioning_scale=1.0,
-                start_percentage=0.0,
-                end_percentage=1.0,
-            )
-        ],
+        # controlnets=[
+        #     ControlNet(
+        #         path="diffusers/controlnet-canny-sdxl-1.0",
+        #         # path = "lllyasviel/sd-controlnet-canny",
+        #         image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
+        #         conditioning_scale=1.0,
+        #         start_percentage=0.0,
+        #         end_percentage=1.0,
+        #     )
+        # ],
+        ip_adapter=IPAdapter(
+            ip_adapter_image_url="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/ip_adapter_diner.png",
+            path="h94/IP-Adapter",
+            model_subfolder="sdxl_models",
+            weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
+            image_encoder_path="h94/IP-Adapter",
+            image_encoder_subpath="models/image_encoder",
+        ),
         guidance_scale=7.5,
         num_inference_steps=20,
         num_images=1,

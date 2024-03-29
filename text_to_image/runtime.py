@@ -23,6 +23,7 @@ DeviceType = Literal["cpu", "cuda"]
 CHECKPOINTS_DIR = Path("/data/checkpoints")
 LORA_WEIGHTS_DIR = Path("/data/loras")
 EMBEDDINGS_DIR = Path("/data/embeddings")
+IMAGE_DIR = Path("/data/images")
 TEMP_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.8; rv:21.0) Gecko/20100101 Firefox/21.0"
 )
@@ -133,6 +134,48 @@ class ControlNet(BaseModel):
         """,
         ge=0.0,
         le=1.0,
+    )
+
+
+# make the ip adapter weight loader class
+class IPAdapter(BaseModel):
+    path: str = Field(
+        description="URL or the path to the IP adapter weights.",
+        examples=[
+            "https://civitai.com/api/download/models/135931",
+        ],
+    )
+    model_subfolder: str | None = Field(
+        description="Subfolder in the model directory where the IP adapter weights are stored.",
+        examples=[
+            "sdxl_models",
+        ],
+    )
+    weight_name: str | None = Field(
+        description="Name of the weight file.",
+        examples=[
+            "ip-adapter-plus_sdxl_vit-h.safetensors",
+        ],
+    )
+    image_encoder_path: str | None = Field(
+        description="URL or the path to the image encoder weights.",
+        examples=[
+            "h94/IP-Adapter",
+        ],
+    )
+    image_encoder_subpath: str | None = Field(
+        description="Subpath to the image encoder weights.",
+        examples=[
+            "models/image_encoder",
+        ],
+    )
+    scale: float = Field(
+        default=1.0,
+        description="""
+            The scale of the IP adapter weight. This is used to scale the IP adapter weight
+            before merging it with the base model.
+        """,
+        ge=0.0,
     )
 
 
@@ -297,6 +340,105 @@ class GlobalRuntime:
             self.models[model_key] = Model(pipe)
 
         return self.models[model_key]
+
+    @contextmanager
+    def add_ip_adapter(self, ip_adapter: IPAdapter, pipe) -> Iterator[None]:
+        import torch
+        from transformers import CLIPVisionModelWithProjection
+
+        if not ip_adapter:
+            yield
+            return
+
+        ip_adapter_huggingface_key = None
+        ip_adapter_directory = None
+        ip_adapter_name = None
+        try:
+            if ip_adapter.path.startswith("https://"):
+                print("Assuming IP adapter path is a URL")
+                ip_adapter_path = self.download_to(
+                    ip_adapter.path, CHECKPOINTS_DIR, extension="safetensors"
+                )
+                ip_adapter_directory = ip_adapter_path.parent
+                ip_adapter_name = ip_adapter_path.name
+            elif ip_adapter.path.startswith("http://"):
+                # raise an error if the path is an http link
+                raise HTTPException(
+                    422,
+                    detail="HTTP links are not supported for IP adapter weights. Please use HTTPS links or local paths.",
+                )
+            else:
+                print("Assuming IP adapter path is a huggingface model")
+                ip_adapter_huggingface_key = ip_adapter.path  # type: ignore
+        except Exception as e:
+            raise HTTPException(
+                422,
+                detail=f"Failed to download IP adapter: {e}",
+            )
+
+        print("adding IP adapter to the pipe")
+        if ip_adapter_huggingface_key:
+            pipe.load_ip_adapter(
+                ip_adapter_huggingface_key,
+                subfolder=ip_adapter.model_subfolder,
+                weight_name=ip_adapter.weight_name,
+            )
+        elif ip_adapter_directory:
+            pipe.load_ip_adapter(ip_adapter_directory, weight_name=ip_adapter_name)
+        else:
+            raise HTTPException(
+                500,
+                detail="IP adapter path or name was not found. This should be impossible?!",
+            )
+
+        # try downloading the image encoder weights if they are provided
+        image_encoder_huggingface_key = None
+        image_encoder_path = None
+
+        if ip_adapter.image_encoder_path:
+            try:
+                if ip_adapter.image_encoder_path.startswith("https://"):
+                    print("Assuming image encoder path is a URL")
+                    image_encoder_path = self.download_to(
+                        ip_adapter.image_encoder_path,
+                        CHECKPOINTS_DIR,
+                        extension="safetensors",
+                    )
+
+                elif ip_adapter.image_encoder_path.startswith("http://"):
+                    # raise an error if the path is an http link
+                    raise HTTPException(
+                        422,
+                        detail="HTTP links are not supported for image encoder weights. Please use HTTPS links or local paths.",
+                    )
+                else:
+                    print("Assuming image encoder path is a huggingface model")
+                    image_encoder_huggingface_key = ip_adapter.image_encoder_path  # type: ignore
+            except Exception as e:
+                print(e)
+                raise HTTPException(
+                    422,
+                    detail=f"Failed to load IP adapter: {e}",
+                )
+
+            if image_encoder_huggingface_key:
+                encoder = CLIPVisionModelWithProjection.from_pretrained(
+                    image_encoder_huggingface_key,
+                    subfolder=ip_adapter.image_encoder_subpath,
+                    torch_dtype=torch.float16,
+                )
+                pipe.image_encoder = self.execute_on_cuda(partial(encoder.to, "cuda"))
+
+            elif image_encoder_path:
+                encoder = CLIPVisionModelWithProjection.from_pretrained(
+                    image_encoder_path, torch_dtype=torch.float16
+                )
+
+                pipe.image_encoder = self.execute_on_cuda(partial(encoder.to, "cuda"))
+
+        pipe.set_ip_adapter_scale(ip_adapter.scale)
+
+        yield
 
     @contextmanager
     def add_controlnets(self, controlnets: list[ControlNet], pipe) -> Iterator[None]:
@@ -465,6 +607,7 @@ class GlobalRuntime:
         loras: list[LoraWeight],
         embeddings: list[Embedding],
         controlnets: list[ControlNet],
+        ip_adapter: IPAdapter,
         clip_skip: int = 0,
         scheduler: str | None = None,
         model_architecture: str | None = None,
@@ -493,24 +636,25 @@ class GlobalRuntime:
         with self.change_scheduler(pipe, scheduler):
             with self.add_embeddings(embeddings, pipe, arch):
                 with self.add_controlnets(controlnets, pipe):
-                    try:
-                        if loras:
-                            self.merge_and_apply_loras(pipe, loras)
+                    with self.add_ip_adapter(ip_adapter, pipe):
+                        try:
+                            if loras:
+                                self.merge_and_apply_loras(pipe, loras)
 
-                        yield pipe
-                    finally:
-                        if loras:
-                            try:
-                                pipe.unfuse_lora()
-                                pipe.set_adapters(adapter_names=[])
-                            except Exception:
-                                print(
-                                    "Failed to unfuse LoRAs from the pipe, clearing it out of memory."
-                                )
-                                traceback.print_exc()
-                                self.models.pop((model_name, arch), None)
-                            else:
-                                pipe.unload_lora_weights()
+                            yield pipe
+                        finally:
+                            if loras:
+                                try:
+                                    pipe.unfuse_lora()
+                                    pipe.set_adapters(adapter_names=[])
+                                except Exception:
+                                    print(
+                                        "Failed to unfuse LoRAs from the pipe, clearing it out of memory."
+                                    )
+                                    traceback.print_exc()
+                                    self.models.pop((model_name, arch), None)
+                                else:
+                                    pipe.unload_lora_weights()
 
     @contextmanager
     def change_scheduler(

@@ -217,7 +217,7 @@ class InputParameters(BaseModel):
             If set to true, the controlnet will be applied to only the conditional predictions.
         """,
     )
-    ip_adapter: IPAdapter = Field(
+    ip_adapter: IPAdapter | None = Field(
         description="""
             The IP adapter to use for the image generation.
         """,
@@ -306,54 +306,55 @@ class InputParameters(BaseModel):
 
         # get the ip adapter
         ip_adapter = values.get("ip_adapter", {})
-        # get the ip adapter path
-        ip_adapter_path = ip_adapter.path
-        # get the ip adapter image url
-        ip_adapter_image_url = ip_adapter.ip_adapter_image_url
-        # get the image encoder path
-        image_encoder_path = ip_adapter.image_encoder_path
-        # get the image encoder subpath
-        image_encoder_subpath = ip_adapter.image_encoder_subpath
-        # get the weight name
-        weight_name = ip_adapter.weight_name
-        # get the model subfolder
-        model_subfolder = ip_adapter.model_subfolder
+        if ip_adapter is not None:
+            # get the ip adapter path
+            ip_adapter_path = ip_adapter.path
+            # get the ip adapter image url
+            ip_adapter_image_url = ip_adapter.ip_adapter_image_url
+            # get the image encoder path
+            image_encoder_path = ip_adapter.image_encoder_path
+            # get the image encoder subpath
+            image_encoder_subpath = ip_adapter.image_encoder_subpath
+            # get the weight name
+            weight_name = ip_adapter.weight_name
+            # get the model subfolder
+            model_subfolder = ip_adapter.model_subfolder
 
-        # make sure that if the ip adapter path is not None, then the ip adapter image url is not None
-        if ip_adapter_path is not None and ip_adapter_image_url is None:
-            raise ValueError(
-                "'ip_adapter.ip_adapter_image_url' must be provided if 'ip_adapter.path' is provided."
-            )
+            # make sure that if the ip adapter path is not None, then the ip adapter image url is not None
+            if ip_adapter_path is not None and ip_adapter_image_url is None:
+                raise ValueError(
+                    "'ip_adapter.ip_adapter_image_url' must be provided if 'ip_adapter.path' is provided."
+                )
 
-        # make sure that if the image encoder path is not None, then the image encoder subpath is not None
-        if image_encoder_path is not None and image_encoder_subpath is None:
-            raise ValueError(
-                "'ip_adapter.image_encoder_subpath' must be provided if 'ip_adapter.image_encoder_path' is provided."
-            )
+            # make sure that if the image encoder path is not None, then the image encoder subpath is not None
+            if image_encoder_path is not None and image_encoder_subpath is None:
+                raise ValueError(
+                    "'ip_adapter.image_encoder_subpath' must be provided if 'ip_adapter.image_encoder_path' is provided."
+                )
 
-        # make sure that if the weight name is not None, the path is not None
-        if weight_name is not None and ip_adapter_path is None:
-            raise ValueError(
-                "'ip_adapter.path' must be provided if 'ip_adapter.weight_name' is provided."
-            )
+            # make sure that if the weight name is not None, the path is not None
+            if weight_name is not None and ip_adapter_path is None:
+                raise ValueError(
+                    "'ip_adapter.path' must be provided if 'ip_adapter.weight_name' is provided."
+                )
 
-        # make sure that if the model subfolder is not None, the path is not None
-        if model_subfolder is not None and ip_adapter_path is None:
-            raise ValueError(
-                "'ip_adapter.path' must be provided if 'ip_adapter.model_subfolder' is provided."
-            )
+            # make sure that if the model subfolder is not None, the path is not None
+            if model_subfolder is not None and ip_adapter_path is None:
+                raise ValueError(
+                    "'ip_adapter.path' must be provided if 'ip_adapter.model_subfolder' is provided."
+                )
 
-        # make sure that if the encoder path is not None, the path is not None
-        if image_encoder_path is not None and ip_adapter_path is None:
-            raise ValueError(
-                "'ip_adapter.path' must be provided if 'ip_adapter.image_encoder_path' is provided."
-            )
+            # make sure that if the encoder path is not None, the path is not None
+            if image_encoder_path is not None and ip_adapter_path is None:
+                raise ValueError(
+                    "'ip_adapter.path' must be provided if 'ip_adapter.image_encoder_path' is provided."
+                )
 
-        # make sure that if the encoder subpath is not None, the image_encoder_path is not None
-        if image_encoder_subpath is not None and image_encoder_path is None:
-            raise ValueError(
-                "'ip_adapter.image_encoder_path' must be provided if 'ip_adapter.image_encoder_subpath' is provided."
-            )
+            # make sure that if the encoder subpath is not None, the image_encoder_path is not None
+            if image_encoder_subpath is not None and image_encoder_path is None:
+                raise ValueError(
+                    "'ip_adapter.image_encoder_path' must be provided if 'ip_adapter.image_encoder_subpath' is provided."
+                )
 
         return values
 
@@ -473,7 +474,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
 
                 kwargs["image"] = controlnet_images
 
-            if input.ip_adapter.path is not None:
+            if input.ip_adapter is not None and input.ip_adapter.path is not None:
                 kwargs["ip_adapter_image"] = read_image_from_url(
                     input.ip_adapter.ip_adapter_image_url
                 )

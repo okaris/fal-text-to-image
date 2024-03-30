@@ -351,11 +351,11 @@ class GlobalRuntime:
         return self.models[model_key]
 
     @contextmanager
-    def add_ip_adapter(self, ip_adapter: IPAdapter, pipe) -> Iterator[None]:
+    def add_ip_adapter(self, ip_adapter: IPAdapter | None, pipe) -> Iterator[None]:
         import torch
         from transformers import CLIPVisionModelWithProjection
 
-        if not ip_adapter.path:
+        if not ip_adapter or not ip_adapter.path:
             yield
             return
 
@@ -616,7 +616,7 @@ class GlobalRuntime:
         loras: list[LoraWeight],
         embeddings: list[Embedding],
         controlnets: list[ControlNet],
-        ip_adapter: IPAdapter,
+        ip_adapter: IPAdapter | None,
         clip_skip: int = 0,
         scheduler: str | None = None,
         model_architecture: str | None = None,

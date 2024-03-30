@@ -76,16 +76,16 @@ class Embedding(BaseModel):
 
 # make the ip adapter weight loader class
 class IPAdapter(BaseModel):
-    ip_adapter_image_url: str = Field(
+    ip_adapter_image_url: str | None = Field(
         description="URL of the image to be used as the IP adapter.",
         examples=[
-            "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/ip_adapter_diner.png",
+            "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
         ],
     )
-    path: str = Field(
+    path: str | None = Field(
         description="URL or the path to the IP adapter weights.",
         examples=[
-            "https://civitai.com/api/download/models/135931",
+            "h94/IP-Adapter",
         ],
     )
     model_subfolder: str | None = Field(
@@ -125,11 +125,14 @@ class IPAdapter(BaseModel):
 class ControlNet(BaseModel):
     path: str = Field(
         description="URL or the path to the control net weights.",
+        examples=[
+            "diffusers/controlnet-canny-sdxl-1.0",
+        ],
     )
     image_url: str = Field(
         description="URL of the image to be used as the control net.",
         examples=[
-            "https://example.com/image.jpg",
+            "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
         ],
     )
     conditioning_scale: float = Field(
@@ -214,8 +217,7 @@ class InputParameters(BaseModel):
             If set to true, the controlnet will be applied to only the conditional predictions.
         """,
     )
-    ip_adapter: IPAdapter | None = Field(
-        default=None,
+    ip_adapter: IPAdapter = Field(
         description="""
             The IP adapter to use for the image generation.
         """,
@@ -295,12 +297,63 @@ class InputParameters(BaseModel):
     )
 
     @root_validator
-    def check_controlnets(cls, values):
+    def the_validator(cls, values):
         for controlnet in values.get("controlnets", []):
             if controlnet.start_percentage >= controlnet.end_percentage:
                 raise ValueError(
                     "'controlnet.start_percentage' must be smaller than 'controlnet.end_percentage'."
                 )
+
+        # get the ip adapter
+        ip_adapter = values.get("ip_adapter", {})
+        # get the ip adapter path
+        ip_adapter_path = ip_adapter.path
+        # get the ip adapter image url
+        ip_adapter_image_url = ip_adapter.ip_adapter_image_url
+        # get the image encoder path
+        image_encoder_path = ip_adapter.image_encoder_path
+        # get the image encoder subpath
+        image_encoder_subpath = ip_adapter.image_encoder_subpath
+        # get the weight name
+        weight_name = ip_adapter.weight_name
+        # get the model subfolder
+        model_subfolder = ip_adapter.model_subfolder
+
+        # make sure that if the ip adapter path is not None, then the ip adapter image url is not None
+        if ip_adapter_path is not None and ip_adapter_image_url is None:
+            raise ValueError(
+                "'ip_adapter.ip_adapter_image_url' must be provided if 'ip_adapter.path' is provided."
+            )
+
+        # make sure that if the image encoder path is not None, then the image encoder subpath is not None
+        if image_encoder_path is not None and image_encoder_subpath is None:
+            raise ValueError(
+                "'ip_adapter.image_encoder_subpath' must be provided if 'ip_adapter.image_encoder_path' is provided."
+            )
+
+        # make sure that if the weight name is not None, the path is not None
+        if weight_name is not None and ip_adapter_path is None:
+            raise ValueError(
+                "'ip_adapter.path' must be provided if 'ip_adapter.weight_name' is provided."
+            )
+
+        # make sure that if the model subfolder is not None, the path is not None
+        if model_subfolder is not None and ip_adapter_path is None:
+            raise ValueError(
+                "'ip_adapter.path' must be provided if 'ip_adapter.model_subfolder' is provided."
+            )
+
+        # make sure that if the encoder path is not None, the path is not None
+        if image_encoder_path is not None and ip_adapter_path is None:
+            raise ValueError(
+                "'ip_adapter.path' must be provided if 'ip_adapter.image_encoder_path' is provided."
+            )
+
+        # make sure that if the encoder subpath is not None, the image_encoder_path is not None
+        if image_encoder_subpath is not None and image_encoder_path is None:
+            raise ValueError(
+                "'ip_adapter.image_encoder_path' must be provided if 'ip_adapter.image_encoder_subpath' is provided."
+            )
 
         return values
 
@@ -420,7 +473,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
 
                 kwargs["image"] = controlnet_images
 
-            if input.ip_adapter:
+            if input.ip_adapter.path is not None:
                 kwargs["ip_adapter_image"] = read_image_from_url(
                     input.ip_adapter.ip_adapter_image_url
                 )
@@ -464,23 +517,23 @@ if __name__ == "__main__":
         #         tokens=["<s0>", "<s1>"],
         #     )
         # ],
-        # controlnets=[
-        #     ControlNet(
-        #         path="diffusers/controlnet-canny-sdxl-1.0",
-        #         # path = "lllyasviel/sd-controlnet-canny",
-        #         image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
-        #         conditioning_scale=1.0,
-        #         start_percentage=0.0,
-        #         end_percentage=1.0,
-        #     )
-        # ],
+        controlnets=[
+            ControlNet(
+                path="diffusers/controlnet-canny-sdxl-1.0",
+                # path = "lllyasviel/sd-controlnet-canny",
+                image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
+                conditioning_scale=1.0,
+                start_percentage=0.0,
+                end_percentage=1.0,
+            )
+        ],
         ip_adapter=IPAdapter(
-            ip_adapter_image_url="https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/ip_adapter_diner.png",
-            path="h94/IP-Adapter",
-            model_subfolder="sdxl_models",
-            weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
-            image_encoder_path="h94/IP-Adapter",
-            image_encoder_subpath="models/image_encoder",
+            # ip_adapter_image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
+            # path="h94/IP-Adapter",
+            # model_subfolder="sdxl_models",
+            # weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
+            # image_encoder_path="h94/IP-Adapter",
+            # image_encoder_subpath="models/image_encoder",
         ),
         guidance_scale=7.5,
         num_inference_steps=20,

@@ -103,11 +103,14 @@ class Embedding(BaseModel):
 class ControlNet(BaseModel):
     path: str = Field(
         description="URL or the path to the control net weights.",
+        examples=[
+            "diffusers/controlnet-canny-sdxl-1.0",
+        ],
     )
     image_url: str = Field(
         description="URL of the image to be used as the control net.",
         examples=[
-            "https://example.com/image.jpg",
+            "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
         ],
     )
     conditioning_scale: float = Field(
@@ -139,10 +142,16 @@ class ControlNet(BaseModel):
 
 # make the ip adapter weight loader class
 class IPAdapter(BaseModel):
-    path: str = Field(
+    ip_adapter_image_url: str | None = Field(
+        description="URL of the image to be used as the IP adapter.",
+        examples=[
+            "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
+        ],
+    )
+    path: str | None = Field(
         description="URL or the path to the IP adapter weights.",
         examples=[
-            "https://civitai.com/api/download/models/135931",
+            "h94/IP-Adapter",
         ],
     )
     model_subfolder: str | None = Field(
@@ -346,7 +355,7 @@ class GlobalRuntime:
         import torch
         from transformers import CLIPVisionModelWithProjection
 
-        if not ip_adapter:
+        if not ip_adapter.path:
             yield
             return
 

@@ -205,17 +205,21 @@ def create_pipeline():
             tokenizer: CLIPTokenizer,
             tokenizer_2: CLIPTokenizer,
             unet: UNet2DConditionModel,
+            scheduler: KarrasDiffusionSchedulers,
             controlnet: ControlNetModel
             | list[ControlNetModel]
             | tuple[ControlNetModel]
-            | MultiControlNetModel,
-            scheduler: KarrasDiffusionSchedulers,
+            | MultiControlNetModel
+            | None = None,
             force_zeros_for_empty_prompt: bool = True,
             add_watermarker: bool | None = None,
             feature_extractor: CLIPImageProcessor = None,
             image_encoder: CLIPVisionModelWithProjection = None,
         ):
             super().__init__()
+
+            if controlnet is None:
+                controlnet = MultiControlNetModel([])
 
             if isinstance(controlnet, (list, tuple)):
                 controlnet = MultiControlNetModel(controlnet)
@@ -1917,17 +1921,21 @@ def create_pipeline():
             text_encoder: CLIPTextModel,
             tokenizer: CLIPTokenizer,
             unet: UNet2DConditionModel,
-            controlnet: ControlNetModel
-            | list[ControlNetModel]
-            | tuple[ControlNetModel]
-            | MultiControlNetModel,
             scheduler: KarrasDiffusionSchedulers,
             safety_checker: StableDiffusionSafetyChecker,
             feature_extractor: CLIPImageProcessor,
+            controlnet: ControlNetModel
+            | list[ControlNetModel]
+            | tuple[ControlNetModel]
+            | MultiControlNetModel
+            | None = None,
             image_encoder: CLIPVisionModelWithProjection = None,
             requires_safety_checker: bool = True,
         ):
             super().__init__()
+
+            if controlnet is None:
+                controlnet = MultiControlNetModel([])
 
             if safety_checker is None and requires_safety_checker:
                 logger.warning(

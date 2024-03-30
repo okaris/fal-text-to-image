@@ -501,7 +501,9 @@ def generate_image(input: InputParameters) -> OutputParameters:
 if __name__ == "__main__":
     # generate_image.on(serve=True, keep_alive=0)()
     input = InputParameters(
-        model_name=f"stabilityai/stable-diffusion-xl-base-1.0",
+        # model_name=f"stabilityai/stable-diffusion-xl-base-1.0",
+        model_name="https://civitai.com/api/download/models/274039?type=Model&format=SafeTensor&size=pruned&fp=fp16",
+        # model_name="https://civitai.com/api/download/models/348913?type=Model&format=SafeTensor&size=full&fp=fp16",
         # model_name="SG161222/Realistic_Vision_V2.0",
         # model_name="runwayml/stable-diffusion-v1-5",
         prompt="Self-portrait oil painting, a beautiful cyborg with golden hair, 8k",
@@ -519,8 +521,8 @@ if __name__ == "__main__":
         # ],
         controlnets=[
             ControlNet(
-                path="diffusers/controlnet-canny-sdxl-1.0",
-                # path = "lllyasviel/sd-controlnet-canny",
+                # path="diffusers/controlnet-canny-sdxl-1.0",
+                path="lllyasviel/sd-controlnet-canny",
                 image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
                 conditioning_scale=1.0,
                 start_percentage=0.0,
@@ -528,18 +530,21 @@ if __name__ == "__main__":
             )
         ],
         ip_adapter=IPAdapter(
-            # ip_adapter_image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
-            # path="h94/IP-Adapter",
+            ip_adapter_image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
+            path="h94/IP-Adapter",
             # model_subfolder="sdxl_models",
+            model_subfolder="models",
             # weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
-            # image_encoder_path="h94/IP-Adapter",
-            # image_encoder_subpath="models/image_encoder",
+            weight_name="ip-adapter-plus_sd15.safetensors",
+            image_encoder_path="h94/IP-Adapter",
+            image_encoder_subpath="models/image_encoder",
         ),
         guidance_scale=7.5,
         num_inference_steps=20,
         num_images=1,
         seed=42,
-        model_architecture="sdxl",
+        # model_architecture="sdxl",
+        model_architecture="sd",
         scheduler="Euler A",
         image_size=ImageSize(width=1024, height=1024)
         # scheduler="LCM",

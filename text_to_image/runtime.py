@@ -385,25 +385,9 @@ class GlobalRuntime:
                 detail=f"Failed to download IP adapter: {e}",
             )
 
-        print("adding IP adapter to the pipe")
-        if ip_adapter_huggingface_key:
-            pipe.load_ip_adapter(
-                ip_adapter_huggingface_key,
-                subfolder=ip_adapter.model_subfolder,
-                weight_name=ip_adapter.weight_name,
-            )
-        elif ip_adapter_directory:
-            pipe.load_ip_adapter(ip_adapter_directory, weight_name=ip_adapter_name)
-        else:
-            raise HTTPException(
-                500,
-                detail="IP adapter path or name was not found. This should be impossible?!",
-            )
-
         # try downloading the image encoder weights if they are provided
         image_encoder_huggingface_key = None
         image_encoder_path = None
-
         if ip_adapter.image_encoder_path:
             try:
                 if ip_adapter.image_encoder_path.startswith("https://"):
@@ -430,6 +414,24 @@ class GlobalRuntime:
                     detail=f"Failed to load IP adapter: {e}",
                 )
 
+        old_image_encoder = pipe.image_encoder
+
+        try:
+            print("adding IP adapter to the pipe")
+            if ip_adapter_huggingface_key:
+                pipe.load_ip_adapter(
+                    ip_adapter_huggingface_key,
+                    subfolder=ip_adapter.model_subfolder,
+                    weight_name=ip_adapter.weight_name,
+                )
+            elif ip_adapter_directory:
+                pipe.load_ip_adapter(ip_adapter_directory, weight_name=ip_adapter_name)
+            else:
+                raise HTTPException(
+                    500,
+                    detail="IP adapter path or name was not found. This should be impossible?!",
+                )
+
             if image_encoder_huggingface_key:
                 encoder = CLIPVisionModelWithProjection.from_pretrained(
                     image_encoder_huggingface_key,
@@ -445,9 +447,13 @@ class GlobalRuntime:
 
                 pipe.image_encoder = self.execute_on_cuda(partial(encoder.to, "cuda"))
 
-        pipe.set_ip_adapter_scale(ip_adapter.scale)
+            pipe.set_ip_adapter_scale(ip_adapter.scale)
 
-        yield
+            yield
+
+        finally:
+            pipe.unload_ip_adapter()
+            pipe.image_encoder = old_image_encoder
 
     @contextmanager
     def add_controlnets(self, controlnets: list[ControlNet], pipe) -> Iterator[None]:
@@ -503,6 +509,15 @@ class GlobalRuntime:
                 controlnet_models.append(
                     self.execute_on_cuda(partial(controlnet_model.to, "cuda"))
                 )
+
+            print(
+                "adding controlnets to the pipe, controlnet_models len",
+                len(controlnet_models),
+            )
+
+            pipe.controlnet = MultiControlNetModel(controlnet_models)
+
+            yield
         except Exception as e:
             print(e)
             raise HTTPException(
@@ -510,14 +525,18 @@ class GlobalRuntime:
                 detail=f"Failed to load controlnet: {e}",
             )
 
-        print(
-            "adding controlnets to the pipe, controlnet_models len",
-            len(controlnet_models),
-        )
+        finally:
+            pipe.controlnet = MultiControlNetModel([])
+            for controlnet_model in controlnet_models:
+                if controlnet_model is not None:
+                    controlnet_model.cpu()
+                    del controlnet_model
 
-        pipe.controlnet = MultiControlNetModel(controlnet_models)
+            del controlnet_models
+            import gc
 
-        yield
+            gc.collect()
+            torch.cuda.empty_cache()
 
     @contextmanager
     def add_embeddings(self, embeddings: list[Embedding], pipe, arch) -> Iterator[None]:

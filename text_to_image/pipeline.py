@@ -1131,7 +1131,7 @@ def create_pipeline():
             self,
             prompt: str | list[str] = None,
             prompt_2: str | list[str] | None = None,
-            image: PipelineImageInput = [],
+            image: PipelineImageInput = None,
             height: int | None = None,
             width: int | None = None,
             num_inference_steps: int = 50,
@@ -1310,6 +1310,9 @@ def create_pipeline():
                     If `return_dict` is `True`, [`~pipelines.stable_diffusion.StableDiffusionPipelineOutput`] is returned,
                     otherwise a `tuple` is returned containing the output images.
             """
+
+            if image is None:
+                image = []
 
             callback = kwargs.pop("callback", None)
             callback_steps = kwargs.pop("callback_steps", None)
@@ -2742,7 +2745,7 @@ def create_pipeline():
         def __call__(
             self,
             prompt: str | list[str] = None,
-            image: PipelineImageInput = [],
+            image: PipelineImageInput = None,
             height: int | None = None,
             width: int | None = None,
             num_inference_steps: int = 50,
@@ -2873,6 +2876,9 @@ def create_pipeline():
                     second element is a list of `bool`s indicating whether the corresponding generated image contains
                     "not-safe-for-work" (nsfw) content.
             """
+
+            if image is None:
+                image = []
 
             callback = kwargs.pop("callback", None)
             callback_steps = kwargs.pop("callback_steps", None)

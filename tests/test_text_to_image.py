@@ -118,6 +118,121 @@ TEST_CASES = [
         },
         "output": {"images": ["fal_file_storage/1e57c30cedc04c9d89e3d4990b36c506.png"]},
     },
+    {
+        "name": "CN x IP Adapter x Lora",
+        "input": {
+            "loras": [
+                {"path": "https://civitai.com/api/download/models/135931", "scale": 1}
+            ],
+            "prompt": "Photo of a european medieval 40 year old queen, silver hair, highly detailed face, detailed eyes, head shot, intricate crown, age spots, wrinkles",
+            "embeddings": [
+                {
+                    "path": "https://storage.googleapis.com/falserverless/style_lora/emb_our_test_1.safetensors",
+                    "tokens": ["<s0>", "<s1>"],
+                }
+            ],
+            "image_size": "square_hd",
+            "ip_adapter": {
+                "path": "h94/IP-Adapter",
+                "scale": 1,
+                "weight_name": "ip-adapter-plus_sdxl_vit-h.safetensors",
+                "model_subfolder": "sdxl_models",
+                "image_encoder_path": "h94/IP-Adapter",
+                "ip_adapter_image_url": "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
+                "image_encoder_subpath": "models/image_encoder",
+            },
+            "model_name": "stabilityai/stable-diffusion-xl-base-1.0",
+            "num_images": 1,
+            "controlnets": [
+                {
+                    "path": "diffusers/controlnet-canny-sdxl-1.0",
+                    "image_url": "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
+                    "end_percentage": 1,
+                    "conditioning_scale": 1,
+                }
+            ],
+            "image_format": "jpeg",
+            "guidance_scale": 7.5,
+            "negative_prompt": "cartoon, painting, illustration, (worst quality, low quality, normal quality:2)",
+            "num_inference_steps": 30,
+            "enable_safety_checker": True,
+            "seed": 6175561901514984000,
+        },
+        "output": {"images": ["fal_file_storage/test_8.png"]},
+    },
+    {
+        "name": "CN x Lora",
+        "input": {
+            "loras": [
+                {"path": "https://civitai.com/api/download/models/135931", "scale": 1}
+            ],
+            "prompt": "Photo of a european medieval 40 year old queen, silver hair, highly detailed face, detailed eyes, head shot, intricate crown, age spots, wrinkles",
+            "embeddings": [
+                {
+                    "path": "https://storage.googleapis.com/falserverless/style_lora/emb_our_test_1.safetensors",
+                    "tokens": ["<s0>", "<s1>"],
+                }
+            ],
+            "image_size": "square_hd",
+            "model_name": "stabilityai/stable-diffusion-xl-base-1.0",
+            "num_images": 1,
+            "controlnets": [
+                {
+                    "path": "diffusers/controlnet-canny-sdxl-1.0",
+                    "image_url": "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
+                    "end_percentage": 1,
+                    "conditioning_scale": 1,
+                }
+            ],
+            "image_format": "jpeg",
+            "guidance_scale": 7.5,
+            "negative_prompt": "cartoon, painting, illustration, (worst quality, low quality, normal quality:2)",
+            "num_inference_steps": 30,
+            "enable_safety_checker": True,
+            "seed": 6175561901514984000,
+        },
+        "output": {"images": ["fal_file_storage/test_9.png"]},
+    },
+    {
+        "name": "CN x Simple IP Adapter x Lora",
+        "input": {
+            "loras": [
+                {"path": "https://civitai.com/api/download/models/135931", "scale": 1}
+            ],
+            "prompt": "Photo of a european medieval 40 year old queen, silver hair, highly detailed face, detailed eyes, head shot, intricate crown, age spots, wrinkles",
+            "embeddings": [
+                {
+                    "path": "https://storage.googleapis.com/falserverless/style_lora/emb_our_test_1.safetensors",
+                    "tokens": ["<s0>", "<s1>"],
+                }
+            ],
+            "image_size": "square_hd",
+            "ip_adapter": {
+                "path": "h94/IP-Adapter",
+                "scale": 1,
+                "weight_name": "ip-adapter_sdxl.bin",
+                "model_subfolder": "sdxl_models",
+                "ip_adapter_image_url": "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
+            },
+            "model_name": "stabilityai/stable-diffusion-xl-base-1.0",
+            "num_images": 1,
+            "controlnets": [
+                {
+                    "path": "diffusers/controlnet-canny-sdxl-1.0",
+                    "image_url": "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
+                    "end_percentage": 1,
+                    "conditioning_scale": 1,
+                }
+            ],
+            "image_format": "jpeg",
+            "guidance_scale": 7.5,
+            "negative_prompt": "cartoon, painting, illustration, (worst quality, low quality, normal quality:2)",
+            "num_inference_steps": 30,
+            "enable_safety_checker": True,
+            "seed": 6175561901514984000,
+        },
+        "output": {"images": ["fal_file_storage/test_11.png"]},
+    },
 ]
 
 

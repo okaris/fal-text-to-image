@@ -500,7 +500,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
 
 
 if __name__ == "__main__":
-    # generate_image.on(serve=True, keep_alive=0)()
+    generate_image.on(serve=True, keep_alive=0)()
     input = InputParameters(
         # model_name=f"stabilityai/stable-diffusion-xl-base-1.0",
         model_name="https://civitai.com/api/download/models/274039?type=Model&format=SafeTensor&size=pruned&fp=fp16",

@@ -16,6 +16,14 @@ def load_session():
     return GlobalRuntime()
 
 
+def invalid_data_error(field_name: list, message: str):
+    from fastapi import HTTPException
+
+    details = [{"loc": ["body"] + field_name, "msg": message, "type": "value_error"}]
+
+    return HTTPException(status_code=422, detail=details)
+
+
 @lru_cache(maxsize=64)
 def read_image_from_url(url: str):
     import PIL
@@ -217,7 +225,8 @@ class InputParameters(BaseModel):
             If set to true, the controlnet will be applied to only the conditional predictions.
         """,
     )
-    ip_adapter: IPAdapter | None = Field(
+    ip_adapter: list[IPAdapter] = Field(
+        default_factory=list,
         description="""
             The IP adapter to use for the image generation.
         """,
@@ -298,15 +307,23 @@ class InputParameters(BaseModel):
 
     @root_validator
     def the_validator(cls, values):
-        for controlnet in values.get("controlnets", []):
+        for i, controlnet in enumerate(values.get("controlnets", [])):
             if controlnet.start_percentage >= controlnet.end_percentage:
-                raise ValueError(
-                    "'controlnet.start_percentage' must be smaller than 'controlnet.end_percentage'."
+                raise invalid_data_error(
+                    ["controlnet", i, "start_percentage"],
+                    "'controlnet.start_percentage' must be smaller than 'controlnet.end_percentage'.",
                 )
 
         # get the ip adapter
-        ip_adapter = values.get("ip_adapter", {})
-        if ip_adapter is not None:
+        ip_adapters = values.get("ip_adapter", [])
+
+        if ip_adapters:
+            if len(ip_adapters) > 1:
+                raise invalid_data_error(
+                    ["ip_adapter", 1], "Only one IP adapter is supported at the moment."
+                )
+            else:
+                ip_adapter = ip_adapters[0]
             # get the ip adapter path
             ip_adapter_path = ip_adapter.path
             # get the ip adapter image url
@@ -322,38 +339,44 @@ class InputParameters(BaseModel):
 
             # make sure that if the ip adapter path is not None, then the ip adapter image url is not None
             if ip_adapter_path is not None and ip_adapter_image_url is None:
-                raise ValueError(
-                    "'ip_adapter.ip_adapter_image_url' must be provided if 'ip_adapter.path' is provided."
+                raise invalid_data_error(
+                    ["ip_adapter", 0, "ip_adapter_image_url"],
+                    "'ip_adapter.ip_adapter_image_url' must be provided if 'ip_adapter.path' is provided.",
                 )
 
             # make sure that if the image encoder path is not None, then the image encoder subpath is not None
             if image_encoder_path is not None and image_encoder_subpath is None:
-                raise ValueError(
-                    "'ip_adapter.image_encoder_subpath' must be provided if 'ip_adapter.image_encoder_path' is provided."
+                raise invalid_data_error(
+                    ["ip_adapter", 0, "image_encoder_subpath"],
+                    "'ip_adapter.image_encoder_subpath' must be provided if 'ip_adapter.image_encoder_path' is provided.",
                 )
 
             # make sure that if the weight name is not None, the path is not None
             if weight_name is not None and ip_adapter_path is None:
-                raise ValueError(
-                    "'ip_adapter.path' must be provided if 'ip_adapter.weight_name' is provided."
+                raise invalid_data_error(
+                    ["ip_adapter", 0, "weight_name"],
+                    "'ip_adapter.path' must be provided if 'ip_adapter.weight_name' is provided.",
                 )
 
             # make sure that if the model subfolder is not None, the path is not None
             if model_subfolder is not None and ip_adapter_path is None:
-                raise ValueError(
-                    "'ip_adapter.path' must be provided if 'ip_adapter.model_subfolder' is provided."
+                raise invalid_data_error(
+                    ["ip_adapter", 0, "model_subfolder"],
+                    "'ip_adapter.path' must be provided if 'ip_adapter.model_subfolder' is provided.",
                 )
 
             # make sure that if the encoder path is not None, the path is not None
             if image_encoder_path is not None and ip_adapter_path is None:
-                raise ValueError(
-                    "'ip_adapter.path' must be provided if 'ip_adapter.image_encoder_path' is provided."
+                raise invalid_data_error(
+                    ["ip_adapter", 0, "image_encoder_path"],
+                    "'ip_adapter.path' must be provided if 'ip_adapter.image_encoder_path' is provided.",
                 )
 
             # make sure that if the encoder subpath is not None, the image_encoder_path is not None
             if image_encoder_subpath is not None and image_encoder_path is None:
-                raise ValueError(
-                    "'ip_adapter.image_encoder_path' must be provided if 'ip_adapter.image_encoder_subpath' is provided."
+                raise invalid_data_error(
+                    ["ip_adapter", 0, "image_encoder_subpath"],
+                    "'ip_adapter.image_encoder_path' must be provided if 'ip_adapter.image_encoder_subpath' is provided.",
                 )
 
         return values
@@ -426,13 +449,19 @@ def generate_image(input: InputParameters) -> OutputParameters:
     if input.image_size is not None:
         image_size = get_image_size(input.image_size)
 
+    # we already validate there is max 1 ip adapter
+    if len(input.ip_adapter) > 0:
+        ip_adapter = input.ip_adapter[0]
+    else:
+        ip_adapter = None
+
     with wrap_excs():
         with session.load_model(
             input.model_name,
             loras=input.loras,
             embeddings=input.embeddings,
             controlnets=input.controlnets,
-            ip_adapter=input.ip_adapter,
+            ip_adapter=ip_adapter,
             clip_skip=input.clip_skip,
             scheduler=input.scheduler,
             model_architecture=input.model_architecture,
@@ -474,9 +503,9 @@ def generate_image(input: InputParameters) -> OutputParameters:
 
                 kwargs["image"] = controlnet_images
 
-            if input.ip_adapter is not None and input.ip_adapter.path is not None:
+            if ip_adapter is not None and ip_adapter.path is not None:
                 kwargs["ip_adapter_image"] = read_image_from_url(
-                    input.ip_adapter.ip_adapter_image_url
+                    ip_adapter.ip_adapter_image_url
                 )
 
             print(f"Generating {input.num_images} images...")
@@ -500,7 +529,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
 
 
 if __name__ == "__main__":
-    generate_image.on(serve=True, keep_alive=0)()
+    # generate_image.on(serve=True, keep_alive=0)()
     input = InputParameters(
         # model_name=f"stabilityai/stable-diffusion-xl-base-1.0",
         model_name="https://civitai.com/api/download/models/274039?type=Model&format=SafeTensor&size=pruned&fp=fp16",
@@ -530,16 +559,18 @@ if __name__ == "__main__":
                 end_percentage=1.0,
             )
         ],
-        ip_adapter=IPAdapter(
-            ip_adapter_image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
-            path="h94/IP-Adapter",
-            # model_subfolder="sdxl_models",
-            model_subfolder="models",
-            # weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
-            weight_name="ip-adapter-plus_sd15.safetensors",
-            image_encoder_path="h94/IP-Adapter",
-            image_encoder_subpath="models/image_encoder",
-        ),
+        ip_adapter=[
+            IPAdapter(
+                ip_adapter_image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
+                path="h94/IP-Adapter",
+                # model_subfolder="sdxl_models",
+                model_subfolder="models",
+                # weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
+                weight_name="ip-adapter-plus_sd15.safetensors",
+                image_encoder_path="h94/IP-Adapter",
+                image_encoder_subpath="models/image_encoder",
+            )
+        ],
         guidance_scale=7.5,
         num_inference_steps=20,
         num_images=1,

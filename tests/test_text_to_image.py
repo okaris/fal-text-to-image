@@ -132,15 +132,17 @@ TEST_CASES = [
                 }
             ],
             "image_size": "square_hd",
-            "ip_adapter": {
-                "path": "h94/IP-Adapter",
-                "scale": 1,
-                "weight_name": "ip-adapter-plus_sdxl_vit-h.safetensors",
-                "model_subfolder": "sdxl_models",
-                "image_encoder_path": "h94/IP-Adapter",
-                "ip_adapter_image_url": "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
-                "image_encoder_subpath": "models/image_encoder",
-            },
+            "ip_adapter": [
+                {
+                    "path": "h94/IP-Adapter",
+                    "scale": 1,
+                    "weight_name": "ip-adapter-plus_sdxl_vit-h.safetensors",
+                    "model_subfolder": "sdxl_models",
+                    "image_encoder_path": "h94/IP-Adapter",
+                    "ip_adapter_image_url": "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
+                    "image_encoder_subpath": "models/image_encoder",
+                }
+            ],
             "model_name": "stabilityai/stable-diffusion-xl-base-1.0",
             "num_images": 1,
             "controlnets": [
@@ -207,13 +209,15 @@ TEST_CASES = [
                 }
             ],
             "image_size": "square_hd",
-            "ip_adapter": {
-                "path": "h94/IP-Adapter",
-                "scale": 1,
-                "weight_name": "ip-adapter_sdxl.bin",
-                "model_subfolder": "sdxl_models",
-                "ip_adapter_image_url": "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
-            },
+            "ip_adapter": [
+                {
+                    "path": "h94/IP-Adapter",
+                    "scale": 1,
+                    "weight_name": "ip-adapter_sdxl.bin",
+                    "model_subfolder": "sdxl_models",
+                    "ip_adapter_image_url": "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
+                }
+            ],
             "model_name": "stabilityai/stable-diffusion-xl-base-1.0",
             "num_images": 1,
             "controlnets": [

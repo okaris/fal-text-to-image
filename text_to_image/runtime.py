@@ -10,7 +10,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
-from fal.toolkit import Image, download_file
+from fal.toolkit import Image, download_model_weights
 from fal.toolkit.file import FileRepository
 from fal.toolkit.file.providers.gcp import GoogleStorageRepository
 from fastapi import HTTPException
@@ -18,12 +18,15 @@ from pydantic import BaseModel, Field
 
 from text_to_image.pipeline import create_pipeline
 
+
+def download_or_hf_key(path: str) -> str:
+    if path.startswith("https://") or path.startswith("http://"):
+        return str(download_model_weights(path))
+    return path
+
+
 DeviceType = Literal["cpu", "cuda"]
 
-CHECKPOINTS_DIR = Path("/data/checkpoints")
-LORA_WEIGHTS_DIR = Path("/data/loras")
-EMBEDDINGS_DIR = Path("/data/embeddings")
-IMAGE_DIR = Path("/data/images")
 TEMP_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.8; rv:21.0) Gecko/20100101 Firefox/21.0"
 )
@@ -217,89 +220,13 @@ class GlobalRuntime:
             torch_dtype=torch.float16,
         ).to("cuda")
 
-    def download_model_if_needed(self, model_name: str) -> str:
-        CHECKPOINTS_DIR.mkdir(exist_ok=True, parents=True)
-        if model_name.startswith("https://") or model_name.startswith("http://"):
-            return str(
-                self.download_to(model_name, CHECKPOINTS_DIR, extension="safetensors")
-            )
-        return model_name
-
-    def download_lora_weight_if_needed(self, lora_weight: str) -> str:
-        LORA_WEIGHTS_DIR.mkdir(exist_ok=True, parents=True)
-        if lora_weight.startswith("https://") or lora_weight.startswith("http://"):
-            download_path = self.download_to(
-                lora_weight, LORA_WEIGHTS_DIR, extension="safetensors"
-            )
-            return str(download_path)
-        return lora_weight
-
-    def download_to(
-        self,
-        url: str,
-        directory: Path,
-        extension: str | None = None,
-    ) -> Path:
-        import os
-        import shutil
-        import tempfile
-        from hashlib import md5
-        from urllib.parse import urlparse
-        from urllib.request import HTTPError, Request, urlopen
-
-        if extension is not None and url.endswith(".ckpt"):
-            raise ValueError("Can't load non-safetensor model files.")
-
-        url_file = CACHE_PREFIX + urlparse(url).path.split("/")[-1].strip(".").replace(
-            ".", "_"
-        )
-        url_hash = md5(url.encode()).hexdigest()
-        download_path = directory / f"{url_file}-{url_hash}"
-
-        if extension:
-            download_path = download_path.with_suffix("." + extension)
-
-        if not download_path.exists():
-            request = Request(url, headers={"User-Agent": TEMP_USER_AGENT})
-            fd, tmp_file = tempfile.mkstemp()
-            try:
-                with urlopen(request) as response, open(fd, "wb") as f_stream:
-                    total_size = int(response.headers.get("content-length", 0))
-                    while data := response.read(CHUNK_SIZE):
-                        f_stream.write(data)
-                        if total_size > 0:
-                            progress_msg = f"Downloading {url}... {f_stream.tell() / total_size:.2%}"
-                        else:
-                            progress_msg = f"Downloading {url}... {f_stream.tell() / ONE_MB:.2f} MB"
-                        print(progress_msg)
-                    f_stream.flush()
-            except HTTPError as exc:
-                os.remove(tmp_file)
-                raise ValueError(
-                    f"Couldn't download weights from the given URL: {url}. Possible cause is: {str(exc)}"
-                )
-            except Exception:
-                os.remove(tmp_file)
-                raise
-
-            if total_size > 0 and total_size != os.path.getsize(tmp_file):
-                os.remove(tmp_file)
-                raise ValueError(
-                    f"Downloaded file {tmp_file} is not the same size as the remote file."
-                )
-
-            # Only move when the download is complete.
-            shutil.move(tmp_file, download_path)
-
-        return download_path
-
     def merge_and_apply_loras(
         self,
         pipe: object,
         loras: list[LoraWeight],
     ):
         print(f"LoRAs: {loras}")
-        lora_paths = [self.download_lora_weight_if_needed(lora.path) for lora in loras]
+        lora_paths = [download_or_hf_key(lora.path) for lora in loras]
         adapter_names = [
             Path(lora_path).name.replace(".", "_") for lora_path in lora_paths
         ]
@@ -365,9 +292,7 @@ class GlobalRuntime:
         try:
             if ip_adapter.path.startswith("https://"):
                 print("Assuming IP adapter path is a URL")
-                ip_adapter_path = self.download_to(
-                    ip_adapter.path, CHECKPOINTS_DIR, extension="safetensors"
-                )
+                ip_adapter_path = download_or_hf_key(ip_adapter.path)
                 ip_adapter_directory = ip_adapter_path.parent
                 ip_adapter_name = ip_adapter_path.name
             elif ip_adapter.path.startswith("http://"):
@@ -392,10 +317,8 @@ class GlobalRuntime:
             try:
                 if ip_adapter.image_encoder_path.startswith("https://"):
                     print("Assuming image encoder path is a URL")
-                    image_encoder_path = self.download_to(
+                    image_encoder_path = download_model_weights(
                         ip_adapter.image_encoder_path,
-                        CHECKPOINTS_DIR,
-                        extension="safetensors",
                     )
 
                 elif ip_adapter.image_encoder_path.startswith("http://"):
@@ -471,8 +394,8 @@ class GlobalRuntime:
                 # see if you can parse the controlnet path as a URL
                 if controlnet.path.startswith("https://"):
                     print("Assuming controlnet path is a URL")
-                    controlnet_path = self.download_to(
-                        controlnet.path, CHECKPOINTS_DIR, extension="safetensors"
+                    controlnet_path = download_model_weights(
+                        controlnet.path,
                     )
                     controlnet_paths.append(Path(controlnet_path))
                 elif controlnet.path.startswith("http://"):
@@ -553,7 +476,7 @@ class GlobalRuntime:
 
         [embedding] = embeddings
         try:
-            embedding_path = download_file(embedding.path, EMBEDDINGS_DIR)
+            embedding_path = download_or_hf_key(embedding.path)
         except Exception as e:
             raise HTTPException(
                 422,
@@ -640,7 +563,7 @@ class GlobalRuntime:
         scheduler: str | None = None,
         model_architecture: str | None = None,
     ) -> Iterator[object | None]:
-        model_name = self.download_model_if_needed(model_name)
+        model_name = download_or_hf_key(model_name)
 
         if model_architecture is None:
             if "xl" in model_name.lower():
@@ -654,7 +577,7 @@ class GlobalRuntime:
         else:
             arch = model_architecture
 
-        model = self.get_model(model_name, arch=arch)
+        model = self.get_model(str(model_name), arch=arch)
         pipe = model.as_base()
         pipe = self.execute_on_cuda(partial(pipe.to, "cuda"))
 

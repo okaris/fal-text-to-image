@@ -537,18 +537,19 @@ if __name__ == "__main__":
         # model_name="SG161222/Realistic_Vision_V2.0",
         # model_name="runwayml/stable-diffusion-v1-5",
         prompt="Self-portrait oil painting, a beautiful cyborg with golden hair, 8k",
-        # loras=[
-        #     LoraWeight(
-        #         path="https://huggingface.co/latent-consistency/lcm-lora-sdxl/resolve/main/pytorch_lora_weights.safetensors",
-        #         scale=1,
-        #     )
-        # ],
-        # embeddings=[
-        #     Embedding(
-        #         path="https://storage.googleapis.com/falserverless/style_lora/pimento_embeddings.pti",
-        #         tokens=["<s0>", "<s1>"],
-        #     )
-        # ],
+        loras=[
+            LoraWeight(
+                # path="https://huggingface.co/latent-consistency/lcm-lora-sdxl/resolve/main/pytorch_lora_weights.safetensors",
+                path="https://civitai.com/api/download/models/97468?type=Model&format=SafeTensor",
+                scale=1,
+            )
+        ],
+        embeddings=[
+            Embedding(
+                path="https://storage.googleapis.com/falserverless/style_lora/pimento_embeddings.pti",
+                tokens=["<s0>", "<s1>"],
+            )
+        ],
         controlnets=[
             ControlNet(
                 # path="diffusers/controlnet-canny-sdxl-1.0",

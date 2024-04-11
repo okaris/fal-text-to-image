@@ -89,6 +89,21 @@ def create_pipeline():
 
     logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+    # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img.retrieve_latents
+    def retrieve_latents(
+        encoder_output: torch.Tensor,
+        generator: torch.Generator | None = None,
+        sample_mode: str = "sample",
+    ):
+        if hasattr(encoder_output, "latent_dist") and sample_mode == "sample":
+            return encoder_output.latent_dist.sample(generator)
+        elif hasattr(encoder_output, "latent_dist") and sample_mode == "argmax":
+            return encoder_output.latent_dist.mode()
+        elif hasattr(encoder_output, "latents"):
+            return encoder_output.latents
+        else:
+            raise AttributeError("Could not access latents of provided encoder_output")
+
     EXAMPLE_DOC_STRING = """
         Examples:
             ```py
@@ -133,6 +148,75 @@ def create_pipeline():
             ... ).images[0]
             ```
     """
+
+    # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.retrieve_timesteps
+    def retrieve_timesteps(
+        scheduler,
+        num_inference_steps: int | None = None,
+        device: str | torch.device | None = None,
+        timesteps: list[int] | None = None,
+        **kwargs,
+    ):
+        """
+        Calls the scheduler's `set_timesteps` method and retrieves timesteps from the scheduler after the call. Handles
+        custom timesteps. Any kwargs will be supplied to `scheduler.set_timesteps`.
+
+        Args:
+            scheduler (`SchedulerMixin`):
+                The scheduler to get timesteps from.
+            num_inference_steps (`int`):
+                The number of diffusion steps used when generating samples with a pre-trained model. If used,
+                `timesteps` must be `None`.
+            device (`str` or `torch.device`, *optional*):
+                The device to which the timesteps should be moved to. If `None`, the timesteps are not moved.
+            timesteps (`List[int]`, *optional*):
+                    Custom timesteps used to support arbitrary spacing between timesteps. If `None`, then the default
+                    timestep spacing strategy of the scheduler is used. If `timesteps` is passed, `num_inference_steps`
+                    must be `None`.
+
+        Returns:
+            `Tuple[torch.Tensor, int]`: A tuple where the first element is the timestep schedule from the scheduler and the
+            second element is the number of inference steps.
+        """
+        if timesteps is not None:
+            accepts_timesteps = "timesteps" in set(
+                inspect.signature(scheduler.set_timesteps).parameters.keys()
+            )
+            if not accepts_timesteps:
+                raise ValueError(
+                    f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
+                    f" timestep schedules. Please check whether you are using the correct scheduler."
+                )
+            scheduler.set_timesteps(timesteps=timesteps, device=device, **kwargs)
+            timesteps = scheduler.timesteps
+            num_inference_steps = len(timesteps)
+        else:
+            scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
+            timesteps = scheduler.timesteps
+        return timesteps, num_inference_steps
+
+    def prepare_noise_image(image):
+        if isinstance(image, torch.Tensor):
+            # Batch single image
+            if image.ndim == 3:
+                image = image.unsqueeze(0)
+
+            image = image.to(dtype=torch.float32)
+        else:
+            # preprocess image
+            if isinstance(image, (PIL.Image.Image, np.ndarray)):
+                image = [image]
+
+            if isinstance(image, list) and isinstance(image[0], PIL.Image.Image):
+                image = [np.array(i.convert("RGB"))[None, :] for i in image]
+                image = np.concatenate(image, axis=0)
+            elif isinstance(image, list) and isinstance(image[0], np.ndarray):
+                image = np.concatenate([i[None, :] for i in image], axis=0)
+
+            image = image.transpose(0, 3, 1, 2)
+            image = torch.from_numpy(image).to(dtype=torch.float32) / 127.5 - 1.0
+
+        return image
 
     class StableDiffusionXLControlNetPipeline(
         DiffusionPipeline,
@@ -259,6 +343,19 @@ def create_pipeline():
             self.register_to_config(
                 force_zeros_for_empty_prompt=force_zeros_for_empty_prompt
             )
+
+        def get_timesteps(self, num_inference_steps, strength, device):
+            # get the original timestep using init_timestep
+            init_timestep = min(
+                int(num_inference_steps * strength), num_inference_steps
+            )
+
+            t_start = max(num_inference_steps - init_timestep, 0)
+            timesteps = self.scheduler.timesteps[t_start * self.scheduler.order :]
+            if hasattr(self.scheduler, "set_begin_index"):
+                self.scheduler.set_begin_index(t_start * self.scheduler.order)
+
+            return timesteps, num_inference_steps - t_start
 
         # Copied from diffusers.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl.StableDiffusionXLPipeline.encode_prompt
         def encode_prompt(
@@ -689,6 +786,99 @@ def create_pipeline():
             if accepts_generator:
                 extra_step_kwargs["generator"] = generator
             return extra_step_kwargs
+
+        def prepare_image_latents(
+            self,
+            image,
+            timestep,
+            batch_size,
+            num_images_per_prompt,
+            dtype,
+            device,
+            generator=None,
+            add_noise=True,
+        ):
+            if not isinstance(image, (torch.Tensor, PIL.Image.Image, list)):
+                raise ValueError(
+                    f"`image` has to be of type `torch.Tensor`, `PIL.Image.Image` or list but is {type(image)}"
+                )
+
+            # Offload text encoder if `enable_model_cpu_offload` was enabled
+            if (
+                hasattr(self, "final_offload_hook")
+                and self.final_offload_hook is not None
+            ):
+                self.text_encoder_2.to("cpu")
+                torch.cuda.empty_cache()
+
+            image = image.to(device=device, dtype=dtype)
+
+            batch_size = batch_size * num_images_per_prompt
+
+            if image.shape[1] == 4:
+                init_latents = image
+
+            else:
+                # make sure the VAE is in float32 mode, as it overflows in float16
+                if self.vae.config.force_upcast:
+                    image = image.float()
+                    self.vae.to(dtype=torch.float32)
+
+                if isinstance(generator, list) and len(generator) != batch_size:
+                    raise ValueError(
+                        f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
+                        f" size of {batch_size}. Make sure the batch size matches the length of the generators."
+                    )
+
+                elif isinstance(generator, list):
+                    init_latents = [
+                        retrieve_latents(
+                            self.vae.encode(image[i : i + 1]), generator=generator[i]
+                        )
+                        for i in range(batch_size)
+                    ]
+                    init_latents = torch.cat(init_latents, dim=0)
+                else:
+                    init_latents = retrieve_latents(
+                        self.vae.encode(image), generator=generator
+                    )
+
+                if self.vae.config.force_upcast:
+                    self.vae.to(dtype)
+
+                init_latents = init_latents.to(dtype)
+                init_latents = self.vae.config.scaling_factor * init_latents
+
+            if (
+                batch_size > init_latents.shape[0]
+                and batch_size % init_latents.shape[0] == 0
+            ):
+                # expand init_latents for batch_size
+                additional_image_per_prompt = batch_size // init_latents.shape[0]
+                init_latents = torch.cat(
+                    [init_latents] * additional_image_per_prompt, dim=0
+                )
+            elif (
+                batch_size > init_latents.shape[0]
+                and batch_size % init_latents.shape[0] != 0
+            ):
+                raise ValueError(
+                    f"Cannot duplicate `image` of batch size {init_latents.shape[0]} to {batch_size} text prompts."
+                )
+            else:
+                init_latents = torch.cat([init_latents], dim=0)
+
+            if add_noise:
+                shape = init_latents.shape
+                noise = randn_tensor(
+                    shape, generator=generator, device=device, dtype=dtype
+                )
+                # get latents
+                init_latents = self.scheduler.add_noise(init_latents, noise, timestep)
+
+            latents = init_latents
+
+            return latents
 
         def check_inputs(
             self,
@@ -1143,6 +1333,8 @@ def create_pipeline():
             eta: float = 0.0,
             generator: torch.Generator | list[torch.Generator] | None = None,
             latents: torch.FloatTensor | None = None,
+            image_for_noise: PipelineImageInput | None = None,
+            strength: float = 1.0,
             prompt_embeds: torch.FloatTensor | None = None,
             negative_prompt_embeds: torch.FloatTensor | None = None,
             pooled_prompt_embeds: torch.FloatTensor | None = None,
@@ -1313,6 +1505,16 @@ def create_pipeline():
 
             if image is None:
                 image = []
+
+            # make sure only one of the either latents of image_for_noise is passed
+            if latents is not None and image_for_noise is not None:
+                raise ValueError(
+                    "Only one of `latents` or `image_for_noise` can be passed."
+                )
+
+            # make sure that strength is between 0 and 1
+            if not 0 <= strength <= 1:
+                raise ValueError("`strength` should be between 0 and 1.")
 
             callback = kwargs.pop("callback", None)
             callback_steps = kwargs.pop("callback_steps", None)
@@ -1491,23 +1693,68 @@ def create_pipeline():
             else:
                 assert False
 
+            # 4.1 Prepare image for noise
+
+            if image_for_noise is not None:
+                print("Image for noise is not None")
+                image_for_noise = prepare_noise_image(
+                    image_for_noise,
+                )
+
+                # if the height and width is set
+                # resize the image_for_noise to the same size
+                if height is not None and width is not None:
+                    image_for_noise = F.interpolate(
+                        image_for_noise, size=(height, width), mode="bilinear"
+                    )
+                else:
+                    height, width = image_for_noise.shape[-2:]
+            else:
+                print("Image for noise is None")
+
             # 5. Prepare timesteps
-            self.scheduler.set_timesteps(num_inference_steps, device=device)
-            timesteps = self.scheduler.timesteps
+            if image_for_noise is not None:
+                # reworks for automatic1111/comfyui style timesteps, e.g. always the same
+                # regardless of strength
+                new_num_inference_steps = int(num_inference_steps * (1 / strength))
+                self.scheduler.set_timesteps(new_num_inference_steps, device=device)
+                timesteps, num_inference_steps = self.get_timesteps(
+                    new_num_inference_steps, strength, device
+                )
+                latent_timestep = timesteps[:1].repeat(
+                    batch_size * num_images_per_prompt
+                )
+                print("latent_timestep: ", latent_timestep)
+                print("timesteps: ", timesteps)
+            else:
+                self.scheduler.set_timesteps(num_inference_steps, device=device)
+                timesteps = self.scheduler.timesteps
+
             self._num_timesteps = len(timesteps)
 
             # 6. Prepare latent variables
             num_channels_latents = self.unet.config.in_channels
-            latents = self.prepare_latents(
-                batch_size * num_images_per_prompt,
-                num_channels_latents,
-                height,
-                width,
-                prompt_embeds.dtype,
-                device,
-                generator,
-                latents,
-            )
+            if image_for_noise is not None:
+                latents = self.prepare_image_latents(
+                    image_for_noise,
+                    latent_timestep,
+                    batch_size,
+                    num_images_per_prompt,
+                    prompt_embeds.dtype,
+                    device,
+                    generator,
+                )
+            else:
+                latents = self.prepare_latents(
+                    batch_size * num_images_per_prompt,
+                    num_channels_latents,
+                    height,
+                    width,
+                    prompt_embeds.dtype,
+                    device,
+                    generator,
+                    latents,
+                )
 
             # 6.5 Optionally get Guidance Scale Embedding
             timestep_cond = None
@@ -1822,52 +2069,6 @@ def create_pipeline():
 
             return StableDiffusionXLPipelineOutput(images=image)
 
-    # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.retrieve_timesteps
-    def retrieve_timesteps(
-        scheduler,
-        num_inference_steps: int | None = None,
-        device: str | torch.device | None = None,
-        timesteps: list[int] | None = None,
-        **kwargs,
-    ):
-        """
-        Calls the scheduler's `set_timesteps` method and retrieves timesteps from the scheduler after the call. Handles
-        custom timesteps. Any kwargs will be supplied to `scheduler.set_timesteps`.
-
-        Args:
-            scheduler (`SchedulerMixin`):
-                The scheduler to get timesteps from.
-            num_inference_steps (`int`):
-                The number of diffusion steps used when generating samples with a pre-trained model. If used,
-                `timesteps` must be `None`.
-            device (`str` or `torch.device`, *optional*):
-                The device to which the timesteps should be moved to. If `None`, the timesteps are not moved.
-            timesteps (`List[int]`, *optional*):
-                    Custom timesteps used to support arbitrary spacing between timesteps. If `None`, then the default
-                    timestep spacing strategy of the scheduler is used. If `timesteps` is passed, `num_inference_steps`
-                    must be `None`.
-
-        Returns:
-            `Tuple[torch.Tensor, int]`: A tuple where the first element is the timestep schedule from the scheduler and the
-            second element is the number of inference steps.
-        """
-        if timesteps is not None:
-            accepts_timesteps = "timesteps" in set(
-                inspect.signature(scheduler.set_timesteps).parameters.keys()
-            )
-            if not accepts_timesteps:
-                raise ValueError(
-                    f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
-                    f" timestep schedules. Please check whether you are using the correct scheduler."
-                )
-            scheduler.set_timesteps(timesteps=timesteps, device=device, **kwargs)
-            timesteps = scheduler.timesteps
-            num_inference_steps = len(timesteps)
-        else:
-            scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
-            timesteps = scheduler.timesteps
-        return timesteps, num_inference_steps
-
     class StableDiffusionControlNetPipeline(
         DiffusionPipeline,
         StableDiffusionMixin,
@@ -1917,6 +2118,103 @@ def create_pipeline():
         _optional_components = ["safety_checker", "feature_extractor", "image_encoder"]
         _exclude_from_cpu_offload = ["safety_checker"]
         _callback_tensor_inputs = ["latents", "prompt_embeds", "negative_prompt_embeds"]
+
+        def get_timesteps(self, num_inference_steps, strength, device):
+            # get the original timestep using init_timestep
+            init_timestep = min(
+                int(num_inference_steps * strength), num_inference_steps
+            )
+
+            t_start = max(num_inference_steps - init_timestep, 0)
+            timesteps = self.scheduler.timesteps[t_start * self.scheduler.order :]
+            if hasattr(self.scheduler, "set_begin_index"):
+                self.scheduler.set_begin_index(t_start * self.scheduler.order)
+
+            return timesteps, num_inference_steps - t_start
+
+        def prepare_image_latents(
+            self,
+            image,
+            timestep,
+            batch_size,
+            num_images_per_prompt,
+            dtype,
+            device,
+            generator=None,
+        ):
+            if not isinstance(image, (torch.Tensor, PIL.Image.Image, list)):
+                raise ValueError(
+                    f"`image` has to be of type `torch.Tensor`, `PIL.Image.Image` or list but is {type(image)}"
+                )
+
+            image = image.to(device=device, dtype=dtype)
+
+            batch_size = batch_size * num_images_per_prompt
+
+            if image.shape[1] == 4:
+                init_latents = image
+
+            else:
+                if isinstance(generator, list) and len(generator) != batch_size:
+                    raise ValueError(
+                        f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
+                        f" size of {batch_size}. Make sure the batch size matches the length of the generators."
+                    )
+
+                elif isinstance(generator, list):
+                    init_latents = [
+                        retrieve_latents(
+                            self.vae.encode(image[i : i + 1]), generator=generator[i]
+                        )
+                        for i in range(batch_size)
+                    ]
+                    init_latents = torch.cat(init_latents, dim=0)
+                else:
+                    init_latents = retrieve_latents(
+                        self.vae.encode(image), generator=generator
+                    )
+
+                init_latents = self.vae.config.scaling_factor * init_latents
+
+            if (
+                batch_size > init_latents.shape[0]
+                and batch_size % init_latents.shape[0] == 0
+            ):
+                # expand init_latents for batch_size
+                deprecation_message = (
+                    f"You have passed {batch_size} text prompts (`prompt`), but only {init_latents.shape[0]} initial"
+                    " images (`image`). Initial images are now duplicating to match the number of text prompts. Note"
+                    " that this behavior is deprecated and will be removed in a version 1.0.0. Please make sure to update"
+                    " your script to pass as many initial images as text prompts to suppress this warning."
+                )
+                deprecate(
+                    "len(prompt) != len(image)",
+                    "1.0.0",
+                    deprecation_message,
+                    standard_warn=False,
+                )
+                additional_image_per_prompt = batch_size // init_latents.shape[0]
+                init_latents = torch.cat(
+                    [init_latents] * additional_image_per_prompt, dim=0
+                )
+            elif (
+                batch_size > init_latents.shape[0]
+                and batch_size % init_latents.shape[0] != 0
+            ):
+                raise ValueError(
+                    f"Cannot duplicate `image` of batch size {init_latents.shape[0]} to {batch_size} text prompts."
+                )
+            else:
+                init_latents = torch.cat([init_latents], dim=0)
+
+            shape = init_latents.shape
+            noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+
+            # get latents
+            init_latents = self.scheduler.add_noise(init_latents, noise, timestep)
+            latents = init_latents
+
+            return latents
 
         def __init__(
             self,
@@ -2753,6 +3051,8 @@ def create_pipeline():
             guidance_scale: float = 7.5,
             negative_prompt: str | list[str] | None = None,
             num_images_per_prompt: int | None = 1,
+            image_for_noise: PipelineImageInput | None = None,
+            strength: float = 0.0,
             eta: float = 0.0,
             generator: torch.Generator | list[torch.Generator] | None = None,
             latents: torch.FloatTensor | None = None,
@@ -2882,6 +3182,12 @@ def create_pipeline():
 
             callback = kwargs.pop("callback", None)
             callback_steps = kwargs.pop("callback_steps", None)
+
+            # check that either latents or image_for_noise is passed
+            if latents is None and image_for_noise is None:
+                raise ValueError(
+                    "Either `latents` or `image_for_noise` must be passed, but both are `None`."
+                )
 
             if callback is not None:
                 deprecate(
@@ -3052,24 +3358,68 @@ def create_pipeline():
             else:
                 assert False
 
+            if image_for_noise is not None:
+                print("Image for noise is not None")
+                image_for_noise = prepare_noise_image(
+                    image_for_noise,
+                )
+
+                # if the height and width is set
+                # resize the image_for_noise to the same size
+                if height is not None and width is not None:
+                    image_for_noise = F.interpolate(
+                        image_for_noise, size=(height, width), mode="bilinear"
+                    )
+                else:
+                    height, width = image_for_noise.shape[-2:]
+            else:
+                print("Image for noise is None")
+
             # 5. Prepare timesteps
-            timesteps, num_inference_steps = retrieve_timesteps(
-                self.scheduler, num_inference_steps, device, timesteps
-            )
-            self._num_timesteps = len(timesteps)
+
+            if image_for_noise is not None:
+                # reworks for automatic1111/comfyui style timesteps, e.g. always the same
+                # regardless of strength
+                new_num_inference_steps = int(num_inference_steps * (1 / strength))
+                self.scheduler.set_timesteps(new_num_inference_steps, device=device)
+                timesteps, num_inference_steps = self.get_timesteps(
+                    new_num_inference_steps, strength, device
+                )
+                latent_timestep = timesteps[:1].repeat(
+                    batch_size * num_images_per_prompt
+                )
+                print("Latent timestep: ", latent_timestep)
+                print("Timesteps: ", timesteps)
+            else:
+                self.scheduler.set_timesteps(num_inference_steps, device=device)
+                timesteps, num_inference_steps = retrieve_timesteps(
+                    self.scheduler, num_inference_steps, device, timesteps
+                )
+                self._num_timesteps = len(timesteps)
 
             # 6. Prepare latent variables
             num_channels_latents = self.unet.config.in_channels
-            latents = self.prepare_latents(
-                batch_size * num_images_per_prompt,
-                num_channels_latents,
-                height,
-                width,
-                prompt_embeds.dtype,
-                device,
-                generator,
-                latents,
-            )
+            if image_for_noise is not None:
+                latents = self.prepare_image_latents(
+                    image_for_noise,
+                    latent_timestep,
+                    batch_size,
+                    num_images_per_prompt,
+                    prompt_embeds.dtype,
+                    device,
+                    generator,
+                )
+            else:
+                latents = self.prepare_latents(
+                    batch_size * num_images_per_prompt,
+                    num_channels_latents,
+                    height,
+                    width,
+                    prompt_embeds.dtype,
+                    device,
+                    generator,
+                    latents,
+                )
 
             # 6.5 Optionally get Guidance Scale Embedding
             timestep_cond = None

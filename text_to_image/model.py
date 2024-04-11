@@ -1,14 +1,36 @@
 from contextlib import contextmanager
 from functools import lru_cache, partial
-from typing import Literal
+from typing import Any, ClassVar, Literal
 from urllib.request import Request, urlopen
 
-from fal import cached, function
+import fal
+from fal import cached
 from fal.toolkit import Image, ImageSizeInput, get_image_size
 from fal.toolkit.image import ImageSize
 from pydantic import BaseModel, Field, root_validator
 
 from text_to_image.runtime import SUPPORTED_SCHEDULERS, GlobalRuntime, filter_by
+
+
+class OrderedBaseModel(BaseModel):
+    SCHEMA_IGNORES: ClassVar[set[str]] = set()
+    FIELD_ORDERS: ClassVar[list[str]] = []
+
+    class Config:
+        @staticmethod
+        def schema_extra(schema: dict[str, Any], model: type) -> None:
+            # Remove the model_name and scheduler fields from the schema
+            for key in model.SCHEMA_IGNORES:
+                schema["properties"].pop(key, None)
+
+            # Reorder the fields to make sure FIELD_ORDERS are accurate,
+            # any missing fields will be appearing at the end of the schema.
+            properties = {}
+            for field in model.FIELD_ORDERS:
+                if props := schema["properties"].pop(field, None):
+                    properties[field] = props
+
+            schema["properties"] = {**properties, **schema["properties"]}
 
 
 @cached
@@ -170,7 +192,7 @@ class ControlNet(BaseModel):
     )
 
 
-class InputParameters(BaseModel):
+class InputParameters(OrderedBaseModel):
     model_name: str = Field(
         description="URL or HuggingFace ID of the base model to generate the image.",
         examples=[
@@ -197,6 +219,16 @@ class InputParameters(BaseModel):
             "cartoon, painting, illustration, (worst quality, low quality, normal quality:2)",
             "nsfw, cartoon, (epicnegative:0.9)",
         ],
+    )
+    noise_image_url: str | None = Field(
+        default=None,
+        description="URL of the noise image to be used for the image generation.",
+    )
+    noise_strength: float = Field(
+        default=0.5,
+        description="The amount of noise to add to noise image for image. Only used if the noise_image_url is provided. 1.0 is complete noise and 0 is no noise.",
+        ge=0.0,
+        le=1.0,
     )
     loras: list[LoraWeight] = Field(
         default_factory=list,
@@ -408,34 +440,6 @@ def wrap_excs():
         raise HTTPException(422, detail=str(exc))
 
 
-@function(
-    "virtualenv",
-    requirements=[
-        "diffusers==0.27.2",
-        "transformers",
-        "accelerate",
-        "torch>=2.1",
-        "torchvision",
-        "safetensors",
-        "pytorch-lightning",
-        "omegaconf",
-        "invisible-watermark",
-        "google-cloud-storage",
-        "psutil",
-        "peft",
-    ],
-    machine_type="GPU",
-    keep_alive=1800,
-    serve=True,
-    max_concurrency=4,
-    _scheduler="nomad",
-    _scheduler_options={
-        "preferred_dcs": [
-            "datacrunch-fin-01-1",
-            "datacrunch-fin-01-bm",
-        ],
-    },
-)
 def generate_image(input: InputParameters) -> OutputParameters:
     """
     A single API for text-to-image, built on [fal](https://fal.ai) that supports
@@ -503,6 +507,11 @@ def generate_image(input: InputParameters) -> OutputParameters:
 
                 kwargs["image"] = controlnet_images
 
+            if input.noise_image_url is not None:
+                print("reading noise image")
+                kwargs["image_for_noise"] = read_image_from_url(input.noise_image_url)
+                kwargs["strength"] = input.noise_strength
+
             if ip_adapter is not None and ip_adapter.path is not None:
                 kwargs["ip_adapter_image"] = read_image_from_url(
                     ip_adapter.ip_adapter_image_url
@@ -528,61 +537,117 @@ def generate_image(input: InputParameters) -> OutputParameters:
             )
 
 
+class TextToImageInputOverwrites(BaseModel):
+    SCHEMA_IGNORES: ClassVar[set[str]] = {
+        "noise_image",
+        "strength",
+    }
+
+
+class TextToImageInput(TextToImageInputOverwrites, InputParameters):
+    pass
+
+
+class ImageToImageInputOverwrites(BaseModel):
+    SCHEMA_IGNORES: ClassVar[set[str]] = {
+        "image_size",
+    }
+
+
+class ImageToImageInput(ImageToImageInputOverwrites, InputParameters):
+    pass
+
+
+class MegaPipeline(
+    fal.App,
+    _scheduler="nomad",
+    max_concurrency=2,
+    keep_alive=300,
+    resolver="uv",  # type: ignore
+):
+    machine_type = "GPU"
+
+    requirements = [
+        "diffusers==0.27.2",
+        "transformers",
+        "accelerate",
+        "torch>=2.1",
+        "torchvision",
+        "safetensors",
+        "pytorch-lightning",
+        "omegaconf",
+        "invisible-watermark",
+        "google-cloud-storage",
+        "psutil",
+        "peft",
+    ]
+
+    def setup(self) -> None:
+        initial_input = InputParameters(
+            model_name=f"stabilityai/stable-diffusion-xl-base-1.0",
+            prompt="Self-portrait oil painting, a beautiful cyborg with golden hair, 8k",
+            noise_image_url="https://storage.googleapis.com/falserverless/lora/1665_Girl_with_a_Pearl_Earring.jpg",
+            noise_strength=0.5,
+            loras=[
+                LoraWeight(
+                    path="https://huggingface.co/latent-consistency/lcm-lora-sdxl/resolve/main/pytorch_lora_weights.safetensors",
+                    scale=1,
+                )
+            ],
+            embeddings=[
+                Embedding(
+                    path="https://storage.googleapis.com/falserverless/style_lora/pimento_embeddings.pti",
+                    tokens=["<s0>", "<s1>"],
+                )
+            ],
+            controlnets=[
+                ControlNet(
+                    path="diffusers/controlnet-canny-sdxl-1.0",
+                    image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
+                    conditioning_scale=1.0,
+                    start_percentage=0.0,
+                    end_percentage=1.0,
+                )
+            ],
+            ip_adapter=[
+                IPAdapter(
+                    ip_adapter_image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
+                    path="h94/IP-Adapter",
+                    model_subfolder="sdxl_models",
+                    weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
+                    image_encoder_path="h94/IP-Adapter",
+                    image_encoder_subpath="models/image_encoder",
+                )
+            ],
+            guidance_scale=7.5,
+            num_inference_steps=20,
+            num_images=1,
+            seed=42,
+            model_architecture="sdxl",
+            scheduler="Euler A",
+            image_size=ImageSize(width=256, height=256),
+        )
+        _ = generate_image(initial_input)
+        self.ready = True
+        return
+
+    @fal.endpoint("/health")
+    def health(self):
+        if hasattr(self, "ready") and self.ready:
+            return {"status": "ok"}
+        else:
+            return {"status": "not ready"}
+
+    @fal.endpoint("/")
+    def text_to_image(self, input: TextToImageInput) -> OutputParameters:
+        return generate_image(input)
+
+    @fal.endpoint("/image-to-image")
+    def image_to_image(self, input: ImageToImageInput) -> OutputParameters:
+        return generate_image(input)
+
+
 if __name__ == "__main__":
-    # generate_image.on(serve=True, keep_alive=0)()
-    input = InputParameters(
-        # model_name=f"stabilityai/stable-diffusion-xl-base-1.0",
-        model_name="https://civitai.com/api/download/models/274039?type=Model&format=SafeTensor&size=pruned&fp=fp16",
-        # model_name="https://civitai.com/api/download/models/348913?type=Model&format=SafeTensor&size=full&fp=fp16",
-        # model_name="SG161222/Realistic_Vision_V2.0",
-        # model_name="runwayml/stable-diffusion-v1-5",
-        prompt="Self-portrait oil painting, a beautiful cyborg with golden hair, 8k",
-        loras=[
-            LoraWeight(
-                # path="https://huggingface.co/latent-consistency/lcm-lora-sdxl/resolve/main/pytorch_lora_weights.safetensors",
-                path="https://civitai.com/api/download/models/97468?type=Model&format=SafeTensor",
-                scale=1,
-            )
-        ],
-        embeddings=[
-            Embedding(
-                path="https://storage.googleapis.com/falserverless/style_lora/pimento_embeddings.pti",
-                tokens=["<s0>", "<s1>"],
-            )
-        ],
-        controlnets=[
-            ControlNet(
-                # path="diffusers/controlnet-canny-sdxl-1.0",
-                path="lllyasviel/sd-controlnet-canny",
-                image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
-                conditioning_scale=1.0,
-                start_percentage=0.0,
-                end_percentage=1.0,
-            )
-        ],
-        ip_adapter=[
-            IPAdapter(
-                ip_adapter_image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
-                path="h94/IP-Adapter",
-                # model_subfolder="sdxl_models",
-                model_subfolder="models",
-                # weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
-                weight_name="ip-adapter-plus_sd15.safetensors",
-                image_encoder_path="h94/IP-Adapter",
-                image_encoder_subpath="models/image_encoder",
-            )
-        ],
-        guidance_scale=7.5,
-        num_inference_steps=20,
-        num_images=1,
-        seed=42,
-        # model_architecture="sdxl",
-        model_architecture="sd",
-        scheduler="Euler A",
-        image_size=ImageSize(width=1024, height=1024)
-        # scheduler="LCM",
-    )
-    local = generate_image.on(serve=False, keep_alive=0)
-    output = local(input)
-    for image in output.images:
-        print(image.url)
+    # curl $URL -H 'content-type: application/json' -H 'accept: application/json, */*;q=0.5' -d '{"image_url":"https://storage.googleapis.com/falserverless/model_tests/supir/GGsAolHXsAA58vn.jpeg"}'
+    app_fn = fal.wrap_app(MegaPipeline)
+    app_fn()

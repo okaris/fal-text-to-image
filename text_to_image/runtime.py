@@ -363,13 +363,6 @@ class GlobalRuntime:
                 )
                 pipe.image_encoder = self.execute_on_cuda(partial(encoder.to, "cuda"))
 
-            elif image_encoder_path:
-                encoder = CLIPVisionModelWithProjection.from_pretrained(
-                    image_encoder_path, torch_dtype=torch.float16
-                )
-
-                pipe.image_encoder = self.execute_on_cuda(partial(encoder.to, "cuda"))
-
             pipe.set_ip_adapter_scale(ip_adapter.scale)
 
             yield

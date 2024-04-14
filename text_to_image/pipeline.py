@@ -3184,9 +3184,9 @@ def create_pipeline():
             callback_steps = kwargs.pop("callback_steps", None)
 
             # check that either latents or image_for_noise is passed
-            if latents is None and image_for_noise is None:
+            if latents is not None and image_for_noise is not None:
                 raise ValueError(
-                    "Either `latents` or `image_for_noise` must be passed, but both are `None`."
+                    "Either `latents` or `image_for_noise` should be passed, but not both."
                 )
 
             if callback is not None:

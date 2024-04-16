@@ -15,7 +15,9 @@
 
 
 def create_pipeline():
+    import copy
     import inspect
+    import math
     from collections.abc import Callable
     from typing import Any
 
@@ -88,6 +90,45 @@ def create_pipeline():
     from diffusers.pipelines.controlnet.multicontrolnet import MultiControlNetModel
 
     logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+    def get_views(
+        panorama_height,
+        panorama_width,
+        window_height=1024,
+        window_width=1024,
+        stride_height=256,
+        stride_width=256,
+        circular_padding=False,
+    ):
+        # Adjust calculations for separate window height and width
+        num_blocks_height = max(
+            math.ceil((panorama_height - window_height) / stride_height) + 1, 1
+        )
+        num_blocks_width = max(
+            math.ceil((panorama_width - window_width) / stride_width) + 1, 1
+        )
+
+        if circular_padding:
+            num_blocks_width = max(panorama_width // stride_width, 1)
+
+        views = []
+        for h_block in range(num_blocks_height):
+            h_start = h_block * stride_height
+            # Adjust h_start for the last block to ensure it's of window_height
+            if h_start + window_height > panorama_height:
+                h_start = panorama_height - window_height
+            h_end = h_start + window_height
+
+            for w_block in range(num_blocks_width):
+                w_start = w_block * stride_width
+                # Adjust w_start for the last block to ensure it's of window_width
+                if w_start + window_width > panorama_width:
+                    w_start = panorama_width - window_width
+                w_end = w_start + window_width
+
+                views.append((h_start, h_end, w_start, w_end))
+
+        return views
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img.retrieve_latents
     def retrieve_latents(
@@ -1357,6 +1398,10 @@ def create_pipeline():
             clip_skip: int | None = None,
             callback_on_step_end: Callable[[int, int, dict], None] | None = None,
             callback_on_step_end_tensor_inputs: list[str] = ["latents"],
+            tile_window_height: int = 1024,
+            tile_window_width: int = 1024,
+            tile_stride_height: int = 512,
+            tile_stride_width: int = 512,
             **kwargs,
         ):
             r"""
@@ -1756,6 +1801,48 @@ def create_pipeline():
                     latents,
                 )
 
+            view_batch_size = 1
+            circular_padding = False
+            latent_height = latents.shape[2]
+            latent_width = latents.shape[3]
+
+            print("latent_height: ", latent_height)
+            print("latent_width: ", latent_width)
+            print("tile_window_height: ", tile_window_height)
+            print("tile_window_width: ", tile_window_width)
+            print("tile_stride_height: ", tile_stride_height)
+            print("tile_stride_width: ", tile_stride_width)
+
+            window_height = tile_window_height // 8
+            window_width = tile_window_width // 8
+            stride_height = tile_stride_height // 8
+            stride_width = tile_stride_width // 8
+
+            window_height = min(window_height, latent_height)
+            window_width = min(window_width, latent_width)
+
+            views = get_views(
+                latent_height,
+                latent_width,
+                window_height=window_height,
+                window_width=window_width,
+                stride_height=stride_height,
+                stride_width=stride_width,
+                circular_padding=circular_padding,
+            )
+
+            print("Views: ", views)
+
+            views_batch = [
+                views[i : i + view_batch_size]
+                for i in range(0, len(views), view_batch_size)
+            ]
+            views_scheduler_status = [copy.deepcopy(self.scheduler.__dict__)] * len(
+                views_batch
+            )
+            count = torch.zeros_like(latents)
+            value = torch.zeros_like(latents)
+
             # 6.5 Optionally get Guidance Scale Embedding
             timestep_cond = None
             if self.unet.config.time_cond_proj_dim is not None:
@@ -1857,11 +1944,20 @@ def create_pipeline():
                 )
                 timesteps = timesteps[:num_inference_steps]
 
+            # if there is only one view move the latents to the gpu
+            if len(views_batch) == 1:
+                latents = latents.to(device=device)
+                value = value.to(device=device)
+
             is_unet_compiled = is_compiled_module(self.unet)
             is_controlnet_compiled = is_compiled_module(self.controlnet)
             is_torch_higher_equal_2_1 = is_torch_version(">=", "2.1")
             with self.progress_bar(total=num_inference_steps) as progress_bar:
                 for i, t in enumerate(timesteps):
+                    count.zero_()
+                    value.zero_()
+
+                    current_prompt_embeds = prompt_embeds
                     # Relevant thread:
                     # https://dev-discuss.pytorch.org/t/cudagraphs-in-pytorch-2-0/1428
                     if (
@@ -1869,116 +1965,255 @@ def create_pipeline():
                     ) and is_torch_higher_equal_2_1:
                         torch._inductor.cudagraph_mark_step_begin()
                     # expand the latents if we are doing classifier free guidance
-                    latent_model_input = (
-                        torch.cat([latents] * 2)
-                        if self.do_classifier_free_guidance
-                        else latents
-                    )
-                    latent_model_input = self.scheduler.scale_model_input(
-                        latent_model_input, t
-                    )
+                    for j, batch_view in enumerate(views_batch):
+                        print("Batch view: ", batch_view)
+                        vb_size = len(batch_view)
 
-                    added_cond_kwargs = {
-                        "text_embeds": add_text_embeds,
-                        "time_ids": add_time_ids,
-                    }
-
-                    # controlnet(s) inference
-                    if guess_mode and self.do_classifier_free_guidance:
-                        # Infer ControlNet only for the conditional batch.
-                        control_model_input = latents
-                        control_model_input = self.scheduler.scale_model_input(
-                            control_model_input, t
-                        )
-                        controlnet_prompt_embeds = prompt_embeds.chunk(2)[1]
-                        controlnet_added_cond_kwargs = {
-                            "text_embeds": add_text_embeds.chunk(2)[1],
-                            "time_ids": add_time_ids.chunk(2)[1],
-                        }
-                    else:
-                        control_model_input = latent_model_input
-                        controlnet_prompt_embeds = prompt_embeds
-                        controlnet_added_cond_kwargs = added_cond_kwargs
-
-                    if isinstance(controlnet_keep[i], list):
-                        cond_scale = [
-                            c * s
-                            for c, s in zip(
-                                controlnet_conditioning_scale, controlnet_keep[i]
-                            )
-                        ]
-                    else:
-                        controlnet_cond_scale = controlnet_conditioning_scale
-                        if isinstance(controlnet_cond_scale, list):
-                            controlnet_cond_scale = controlnet_cond_scale[0]
-                        cond_scale = controlnet_cond_scale * controlnet_keep[i]
-
-                    if (
-                        isinstance(controlnet, MultiControlNetModel)
-                        and len(controlnet.nets) == 0
-                    ):
-                        down_block_res_samples, mid_block_res_sample = None, None
-                    else:
-                        down_block_res_samples, mid_block_res_sample = self.controlnet(
-                            control_model_input,
-                            t,
-                            encoder_hidden_states=controlnet_prompt_embeds,
-                            controlnet_cond=image,
-                            conditioning_scale=cond_scale,
-                            guess_mode=guess_mode,
-                            added_cond_kwargs=controlnet_added_cond_kwargs,
-                            return_dict=False,
-                        )
-
-                    if (
-                        guess_mode
-                        and self.do_classifier_free_guidance
-                        and mid_block_res_sample is not None
-                    ):
-                        # Inferred ControlNet only for the conditional batch.
-                        # To apply the output of ControlNet to both the unconditional and conditional batches,
-                        # add 0 to the unconditional batch to keep it unchanged.
-                        down_block_res_samples = [
-                            torch.cat([torch.zeros_like(d), d])
-                            for d in down_block_res_samples
-                        ]
-                        mid_block_res_sample = torch.cat(
+                        latents_for_view = torch.cat(
                             [
-                                torch.zeros_like(mid_block_res_sample),
-                                mid_block_res_sample,
+                                latents[:, :, h_start:h_end, w_start:w_end]
+                                for h_start, h_end, w_start, w_end in batch_view
                             ]
                         )
 
-                    if (
-                        ip_adapter_image is not None
-                        or ip_adapter_image_embeds is not None
-                    ):
-                        added_cond_kwargs["image_embeds"] = image_embeds
+                        control_image_for_view = None
+                        if image:
+                            # take a view of the image
+                            if isinstance(image, list):
+                                control_image_for_view = [
+                                    image[j][
+                                        :,
+                                        :,
+                                        h_start * 8 : h_end * 8,
+                                        w_start * 8 : w_end * 8,
+                                    ]
+                                    for h_start, h_end, w_start, w_end in batch_view
+                                ]
+                            else:
+                                control_image_for_view = torch.cat(
+                                    [
+                                        image[
+                                            :,
+                                            :,
+                                            h_start * 8 : h_end * 8,
+                                            w_start * 8 : w_end * 8,
+                                        ]
+                                        for h_start, h_end, w_start, w_end in batch_view
+                                    ]
+                                )
 
-                    # predict the noise residual
-                    noise_pred = self.unet(
-                        latent_model_input,
-                        t,
-                        encoder_hidden_states=prompt_embeds,
-                        timestep_cond=timestep_cond,
-                        cross_attention_kwargs=self.cross_attention_kwargs,
-                        down_block_additional_residuals=down_block_res_samples,
-                        mid_block_additional_residual=mid_block_res_sample,
-                        added_cond_kwargs=added_cond_kwargs,
-                        return_dict=False,
-                    )[0]
+                        latents_for_view = latents_for_view.to(
+                            device=device, dtype=latents.dtype
+                        )
+                        if control_image_for_view is not None:
+                            if isinstance(control_image_for_view, list):
+                                control_image_for_view = [
+                                    c.to(device=device, dtype=self.vae.dtype)
+                                    for c in control_image_for_view
+                                ]
+                            else:
+                                control_image_for_view = control_image_for_view.to(
+                                    device=device, dtype=self.vae.dtype
+                                )
 
-                    # perform guidance
-                    if self.do_classifier_free_guidance:
-                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                        noise_pred = noise_pred_uncond + guidance_scale * (
-                            noise_pred_text - noise_pred_uncond
+                        # rematch block's scheduler status
+                        self.scheduler.__dict__.update(views_scheduler_status[j])
+
+                        # expand the latents if we are doing classifier free guidance
+                        latent_model_input = (
+                            latents_for_view.repeat_interleave(2, dim=0)
+                            if self.do_classifier_free_guidance
+                            else latents_for_view
+                        )
+                        latent_model_input = self.scheduler.scale_model_input(
+                            latent_model_input, t
                         )
 
-                    # compute the previous noisy sample x_t -> x_t-1
-                    latents = self.scheduler.step(
-                        noise_pred, t, latents, **extra_step_kwargs, return_dict=False
-                    )[0]
+                        added_cond_kwargs = {
+                            "text_embeds": add_text_embeds,
+                            "time_ids": add_time_ids,
+                        }
+
+                        # controlnet(s) inference
+                        if guess_mode and self.do_classifier_free_guidance:
+                            # Infer ControlNet only for the conditional batch.
+                            control_model_input = latents
+                            control_model_input = self.scheduler.scale_model_input(
+                                control_model_input, t
+                            )
+                            controlnet_prompt_embeds = prompt_embeds.chunk(2)[1]
+                            controlnet_added_cond_kwargs = {
+                                "text_embeds": add_text_embeds.chunk(2)[1],
+                                "time_ids": add_time_ids.chunk(2)[1],
+                            }
+                        else:
+                            control_model_input = latent_model_input
+                            controlnet_prompt_embeds = prompt_embeds
+                            controlnet_added_cond_kwargs = added_cond_kwargs
+
+                        if isinstance(controlnet_keep[i], list):
+                            cond_scale = [
+                                c * s
+                                for c, s in zip(
+                                    controlnet_conditioning_scale, controlnet_keep[i]
+                                )
+                            ]
+                        else:
+                            controlnet_cond_scale = controlnet_conditioning_scale
+                            if isinstance(controlnet_cond_scale, list):
+                                controlnet_cond_scale = controlnet_cond_scale[0]
+                            cond_scale = controlnet_cond_scale * controlnet_keep[i]
+
+                        if (
+                            isinstance(controlnet, MultiControlNetModel)
+                            and len(controlnet.nets) == 0
+                        ):
+                            down_block_res_samples, mid_block_res_sample = None, None
+                        else:
+                            if control_image_for_view is not None:
+                                # controlnet(s) inference
+                                if guess_mode and self.do_classifier_free_guidance:
+                                    # Infer ControlNet only for the conditional batch.
+                                    control_model_input = latents
+                                    control_model_input = (
+                                        self.scheduler.scale_model_input(
+                                            control_model_input, t
+                                        )
+                                    )
+                                    controlnet_prompt_embeds = (
+                                        current_prompt_embeds.chunk(2)[1]
+                                    )
+                                    controlnet_added_cond_kwargs = {
+                                        "text_embeds": current_add_text_embeds.chunk(2)[
+                                            1
+                                        ],
+                                        "time_ids": add_time_ids.chunk(2)[1],
+                                    }
+                                else:
+                                    control_model_input = latent_model_input
+                                    controlnet_prompt_embeds = current_prompt_embeds
+                                    controlnet_added_cond_kwargs = added_cond_kwargs
+
+                                if isinstance(controlnet_keep[i], list):
+                                    cond_scale = [
+                                        c * s
+                                        for c, s in zip(
+                                            controlnet_conditioning_scale,
+                                            controlnet_keep[i],
+                                        )
+                                    ]
+                                else:
+                                    controlnet_cond_scale = (
+                                        controlnet_conditioning_scale
+                                    )
+                                    if isinstance(controlnet_cond_scale, list):
+                                        controlnet_cond_scale = controlnet_cond_scale[0]
+                                    cond_scale = (
+                                        controlnet_cond_scale * controlnet_keep[i]
+                                    )
+
+                                (
+                                    down_block_res_samples,
+                                    mid_block_res_sample,
+                                ) = self.controlnet(
+                                    control_model_input,
+                                    t,
+                                    encoder_hidden_states=controlnet_prompt_embeds,
+                                    controlnet_cond=control_image_for_view,
+                                    conditioning_scale=cond_scale,
+                                    guess_mode=guess_mode,
+                                    added_cond_kwargs=controlnet_added_cond_kwargs,
+                                    return_dict=False,
+                                )
+                            else:
+                                down_block_res_samples = None
+                                mid_block_res_sample = None
+
+                        if (
+                            guess_mode
+                            and self.do_classifier_free_guidance
+                            and mid_block_res_sample is not None
+                        ):
+                            # Inferred ControlNet only for the conditional batch.
+                            # To apply the output of ControlNet to both the unconditional and conditional batches,
+                            # add 0 to the unconditional batch to keep it unchanged.
+                            down_block_res_samples = [
+                                torch.cat([torch.zeros_like(d), d])
+                                for d in down_block_res_samples
+                            ]
+                            mid_block_res_sample = torch.cat(
+                                [
+                                    torch.zeros_like(mid_block_res_sample),
+                                    mid_block_res_sample,
+                                ]
+                            )
+
+                        if (
+                            ip_adapter_image is not None
+                            or ip_adapter_image_embeds is not None
+                        ):
+                            added_cond_kwargs["image_embeds"] = image_embeds
+
+                        # predict the noise residual
+                        noise_pred = self.unet(
+                            latent_model_input,
+                            t,
+                            encoder_hidden_states=prompt_embeds,
+                            timestep_cond=timestep_cond,
+                            cross_attention_kwargs=self.cross_attention_kwargs,
+                            down_block_additional_residuals=down_block_res_samples,
+                            mid_block_additional_residual=mid_block_res_sample,
+                            added_cond_kwargs=added_cond_kwargs,
+                            return_dict=False,
+                        )[0]
+
+                        # perform guidance
+                        if self.do_classifier_free_guidance:
+                            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                            noise_pred = noise_pred_uncond + guidance_scale * (
+                                noise_pred_text - noise_pred_uncond
+                            )
+
+                        # compute the previous noisy sample x_t -> x_t-1
+                        latents_denoised_batch = self.scheduler.step(
+                            noise_pred, t, latents_for_view, **extra_step_kwargs
+                        ).prev_sample
+
+                        # save views scheduler status after sample
+                        views_scheduler_status[j] = copy.deepcopy(
+                            self.scheduler.__dict__
+                        )
+
+                        # extract value from batch
+                        for latents_view_denoised, (
+                            h_start,
+                            h_end,
+                            w_start,
+                            w_end,
+                        ) in zip(latents_denoised_batch.chunk(vb_size), batch_view):
+                            if circular_padding and w_end > latents.shape[3]:
+                                # Case for circular padding
+                                value[
+                                    :, :, h_start:h_end, w_start:
+                                ] += latents_view_denoised[
+                                    :, :, h_start:h_end, : latents.shape[3] - w_start
+                                ].cpu()
+                                value[
+                                    :, :, h_start:h_end, : w_end - latents.shape[3]
+                                ] += latents_view_denoised[
+                                    :, :, h_start:h_end, latents.shape[3] - w_start :
+                                ].cpu()
+                                count[:, :, h_start:h_end, w_start:] += 1
+                                count[
+                                    :, :, h_start:h_end, : w_end - latents.shape[3]
+                                ] += 1
+                            else:
+                                value[
+                                    :, :, h_start:h_end, w_start:w_end
+                                ] += latents_view_denoised.to(device=value.device)
+                                count[:, :, h_start:h_end, w_start:w_end] += 1
+
+                    latents = torch.where(count > 0, value / count, value)
 
                     if callback_on_step_end is not None:
                         callback_kwargs = {}
@@ -3070,6 +3305,10 @@ def create_pipeline():
             clip_skip: int | None = None,
             callback_on_step_end: Callable[[int, int, dict], None] | None = None,
             callback_on_step_end_tensor_inputs: list[str] = ["latents"],
+            tile_window_height: int = 512,
+            tile_window_width: int = 512,
+            tile_stride_height: int = 256,
+            tile_stride_width: int = 256,
             **kwargs,
         ):
             r"""
@@ -3421,6 +3660,36 @@ def create_pipeline():
                     latents,
                 )
 
+            view_batch_size = 1
+            circular_padding = False
+            latent_height = latents.shape[2]
+            latent_width = latents.shape[3]
+
+            print("Latent height: ", latent_height)
+
+            views = get_views(
+                latent_height,
+                latent_width,
+                window_height=tile_window_height // 8,
+                window_width=tile_window_width // 8,
+                stride_height=tile_stride_height // 8,
+                stride_width=tile_stride_width // 8,
+                circular_padding=circular_padding,
+            )
+
+            print("views ", views)
+
+            views_batch = [
+                views[i : i + view_batch_size]
+                for i in range(0, len(views), view_batch_size)
+            ]
+            print(f"Len img2img tiles: {len(views_batch)}")
+            views_scheduler_status = [copy.deepcopy(self.scheduler.__dict__)] * len(
+                views_batch
+            )
+            count = torch.zeros_like(latents)
+            value = torch.zeros_like(latents)
+
             # 6.5 Optionally get Guidance Scale Embedding
             timestep_cond = None
             if self.unet.config.time_cond_proj_dim is not None:
@@ -3460,6 +3729,11 @@ def create_pipeline():
             is_unet_compiled = is_compiled_module(self.unet)
             is_controlnet_compiled = is_compiled_module(self.controlnet)
             is_torch_higher_equal_2_1 = is_torch_version(">=", "2.1")
+
+            if len(views_batch) == 1:
+                latents = latents.to(device=device)
+                value = value.to(device=device)
+
             with self.progress_bar(total=num_inference_steps) as progress_bar:
                 for i, t in enumerate(timesteps):
                     # Relevant thread:
@@ -3468,99 +3742,199 @@ def create_pipeline():
                         is_unet_compiled and is_controlnet_compiled
                     ) and is_torch_higher_equal_2_1:
                         torch._inductor.cudagraph_mark_step_begin()
-                    # expand the latents if we are doing classifier free guidance
-                    latent_model_input = (
-                        torch.cat([latents] * 2)
-                        if self.do_classifier_free_guidance
-                        else latents
-                    )
-                    latent_model_input = self.scheduler.scale_model_input(
-                        latent_model_input, t
-                    )
 
-                    # controlnet(s) inference
-                    if guess_mode and self.do_classifier_free_guidance:
-                        # Infer ControlNet only for the conditional batch.
-                        control_model_input = latents
-                        control_model_input = self.scheduler.scale_model_input(
-                            control_model_input, t
-                        )
-                        controlnet_prompt_embeds = prompt_embeds.chunk(2)[1]
-                    else:
-                        control_model_input = latent_model_input
-                        controlnet_prompt_embeds = prompt_embeds
-
-                    if isinstance(controlnet_keep[i], list):
-                        cond_scale = [
-                            c * s
-                            for c, s in zip(
-                                controlnet_conditioning_scale, controlnet_keep[i]
-                            )
-                        ]
-                    else:
-                        controlnet_cond_scale = controlnet_conditioning_scale
-                        if isinstance(controlnet_cond_scale, list):
-                            controlnet_cond_scale = controlnet_cond_scale[0]
-                        cond_scale = controlnet_cond_scale * controlnet_keep[i]
-
-                    if (
-                        isinstance(controlnet, MultiControlNetModel)
-                        and len(controlnet.nets) == 0
-                    ):
-                        down_block_res_samples, mid_block_res_sample = None, None
-                    else:
-                        down_block_res_samples, mid_block_res_sample = self.controlnet(
-                            control_model_input,
-                            t,
-                            encoder_hidden_states=controlnet_prompt_embeds,
-                            controlnet_cond=image,
-                            conditioning_scale=cond_scale,
-                            guess_mode=guess_mode,
-                            return_dict=False,
-                        )
-
-                    if (
-                        guess_mode
-                        and self.do_classifier_free_guidance
-                        and mid_block_res_sample is not None
-                    ):
-                        # Inferred ControlNet only for the conditional batch.
-                        # To apply the output of ControlNet to both the unconditional and conditional batches,
-                        # add 0 to the unconditional batch to keep it unchanged.
-                        down_block_res_samples = [
-                            torch.cat([torch.zeros_like(d), d])
-                            for d in down_block_res_samples
-                        ]
-                        mid_block_res_sample = torch.cat(
+                    count.zero_()
+                    value.zero_()
+                    for j, batch_view in enumerate(views_batch):
+                        print(f"Batch view: {batch_view}")
+                        vb_size = len(batch_view)
+                        latents_for_view = torch.cat(
                             [
-                                torch.zeros_like(mid_block_res_sample),
-                                mid_block_res_sample,
+                                latents[:, :, h_start:h_end, w_start:w_end]
+                                for h_start, h_end, w_start, w_end in batch_view
                             ]
                         )
 
-                    noise_pred = self.unet(
-                        latent_model_input,
-                        t,
-                        encoder_hidden_states=prompt_embeds,
-                        timestep_cond=timestep_cond,
-                        cross_attention_kwargs=self.cross_attention_kwargs,
-                        down_block_additional_residuals=down_block_res_samples,
-                        mid_block_additional_residual=mid_block_res_sample,
-                        added_cond_kwargs=added_cond_kwargs,
-                        return_dict=False,
-                    )[0]
+                        if image:
+                            # take a view of the image
+                            if isinstance(image, list):
+                                control_image_for_view = [
+                                    image[j][
+                                        :,
+                                        :,
+                                        h_start * 8 : h_end * 8,
+                                        w_start * 8 : w_end * 8,
+                                    ]
+                                    for h_start, h_end, w_start, w_end in batch_view
+                                ]
+                            else:
+                                control_image_for_view = torch.cat(
+                                    [
+                                        image[
+                                            :,
+                                            :,
+                                            h_start * 8 : h_end * 8,
+                                            w_start * 8 : w_end * 8,
+                                        ]
+                                        for h_start, h_end, w_start, w_end in batch_view
+                                    ]
+                                )
 
-                    # perform guidance
-                    if self.do_classifier_free_guidance:
-                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                        noise_pred = noise_pred_uncond + self.guidance_scale * (
-                            noise_pred_text - noise_pred_uncond
+                            latents_for_view = latents_for_view.to(
+                                device=device, dtype=latents.dtype
+                            )
+                            control_image_for_view = control_image_for_view.to(
+                                device=device, dtype=image.dtype
+                            )
+
+                        # rematch block's scheduler status
+                        self.scheduler.__dict__.update(views_scheduler_status[j])
+
+                        # expand the latents if we are doing classifier free guidance
+                        latent_model_input = (
+                            latents_for_view.repeat_interleave(2, dim=0)
+                            if self.do_classifier_free_guidance
+                            else latents_for_view
+                        )
+                        latent_model_input = self.scheduler.scale_model_input(
+                            latent_model_input, t
                         )
 
-                    # compute the previous noisy sample x_t -> x_t-1
-                    latents = self.scheduler.step(
-                        noise_pred, t, latents, **extra_step_kwargs, return_dict=False
-                    )[0]
+                        # repeat prompt_embeds for batch
+                        # not sure why this isn't used yet
+                        prompt_embeds_input = torch.cat([prompt_embeds] * vb_size)
+
+                        # controlnet(s) inference
+                        if guess_mode and self.do_classifier_free_guidance:
+                            # Infer ControlNet only for the conditional batch.
+                            control_model_input = latents
+                            control_model_input = self.scheduler.scale_model_input(
+                                control_model_input, t
+                            )
+                            controlnet_prompt_embeds = prompt_embeds.chunk(2)[1]
+                        else:
+                            control_model_input = latent_model_input
+                            controlnet_prompt_embeds = prompt_embeds
+
+                        current_controlnet_keep = controlnet_keep[i]
+
+                        if isinstance(current_controlnet_keep, float):
+                            current_controlnet_float = current_controlnet_keep
+
+                            controlnet_cond_scale = controlnet_conditioning_scale
+                            if isinstance(controlnet_cond_scale, list):
+                                controlnet_cond_scale_float = controlnet_cond_scale[0]
+                            elif isinstance(controlnet_cond_scale, float):
+                                controlnet_cond_scale_float = controlnet_cond_scale
+                            cond_scale = (
+                                controlnet_cond_scale_float * current_controlnet_float  # type: ignore
+                            )
+
+                        if (
+                            isinstance(controlnet, MultiControlNetModel)
+                            and len(controlnet.nets) == 0
+                        ):
+                            down_block_res_samples, mid_block_res_sample = None, None
+                        else:
+                            (
+                                down_block_res_samples,
+                                mid_block_res_sample,
+                            ) = self.controlnet(
+                                control_model_input,
+                                t,
+                                encoder_hidden_states=controlnet_prompt_embeds,
+                                controlnet_cond=control_image_for_view,
+                                conditioning_scale=cond_scale,
+                                guess_mode=guess_mode,
+                                return_dict=False,
+                            )
+
+                        if guess_mode and self.do_classifier_free_guidance:
+                            # Inferred ControlNet only for the conditional batch.
+                            # To apply the output of ControlNet to both the unconditional and conditional batches,
+                            # add 0 to the unconditional batch to keep it unchanged.
+                            down_block_res_samples = [
+                                torch.cat([torch.zeros_like(d), d])
+                                for d in down_block_res_samples
+                            ]
+                            mid_block_res_sample = torch.cat(
+                                [
+                                    torch.zeros_like(mid_block_res_sample),
+                                    mid_block_res_sample,
+                                ]
+                            )
+
+                        noise_pred = self.unet(
+                            latent_model_input,
+                            t,
+                            encoder_hidden_states=prompt_embeds,
+                            timestep_cond=timestep_cond,
+                            cross_attention_kwargs=self.cross_attention_kwargs,
+                            down_block_additional_residuals=down_block_res_samples,
+                            mid_block_additional_residual=mid_block_res_sample,
+                            added_cond_kwargs=added_cond_kwargs,
+                            return_dict=False,
+                        )[0]
+
+                        # perform guidance
+                        if self.do_classifier_free_guidance:
+                            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                            noise_pred = noise_pred_uncond + self.guidance_scale * (
+                                noise_pred_text - noise_pred_uncond
+                            )
+
+                        # compute the previous noisy sample x_t -> x_t-1
+                        latents_denoised_batch = self.scheduler.step(
+                            noise_pred, t, latents_for_view, **extra_step_kwargs
+                        ).prev_sample
+
+                        # save views scheduler status after sample
+                        views_scheduler_status[j] = copy.deepcopy(
+                            self.scheduler.__dict__
+                        )
+
+                        # extract value from batch
+                        for latents_view_denoised, (
+                            h_start,
+                            h_end,
+                            w_start,
+                            w_end,
+                        ) in zip(latents_denoised_batch.chunk(vb_size), batch_view):
+                            print(
+                                "h_start, h_end, w_start, w_end: ",
+                                h_start,
+                                h_end,
+                                w_start,
+                                w_end,
+                            )
+                            if circular_padding and w_end > latents.shape[3]:
+                                # Case for circular padding
+                                value[
+                                    :, :, h_start:h_end, w_start:
+                                ] += latents_view_denoised[
+                                    :, :, h_start:h_end, : latents.shape[3] - w_start
+                                ].to(
+                                    value.dtype
+                                )
+                                value[
+                                    :, :, h_start:h_end, : w_end - latents.shape[3]
+                                ] += latents_view_denoised[
+                                    :, :, h_start:h_end, latents.shape[3] - w_start :
+                                ].to(
+                                    value.dtype
+                                )
+                                count[:, :, h_start:h_end, w_start:] += 1
+                                count[
+                                    :, :, h_start:h_end, : w_end - latents.shape[3]
+                                ] += 1
+                            else:
+                                value[
+                                    :, :, h_start:h_end, w_start:w_end
+                                ] += latents_view_denoised.to(value.dtype)
+                                count[:, :, h_start:h_end, w_start:w_end] += 1
+
+                    # take the MultiDiffusion step. Eq. 5 in MultiDiffusion paper: https://arxiv.org/abs/2302.08113
+                    latents = torch.where(count > 0, value / count, value)
 
                     if callback_on_step_end is not None:
                         callback_kwargs = {}

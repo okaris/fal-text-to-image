@@ -336,6 +336,30 @@ class InputParameters(OrderedBaseModel):
         default=False,
         description="If set to true, the safety checker will be enabled.",
     )
+    tile_width: int = Field(
+        default=1024,
+        description="The size of the tiles to be used for the image generation.",
+        ge=128,
+        le=2048,
+    )
+    tile_height: int = Field(
+        default=1024,
+        description="The size of the tiles to be used for the image generation.",
+        ge=128,
+        le=2048,
+    )
+    tile_stride_width: int = Field(
+        default=512,
+        description="The stride of the tiles to be used for the image generation.",
+        ge=64,
+        le=1024,
+    )
+    tile_stride_height: int = Field(
+        default=512,
+        description="The stride of the tiles to be used for the image generation.",
+        ge=64,
+        le=1024,
+    )
 
     @root_validator
     def the_validator(cls, values):
@@ -481,7 +505,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 "generator": torch.Generator("cuda").manual_seed(seed),
             }
 
-            if image_size is not None:
+            if image_size is not None and input.noise_image_url is None:
                 kwargs["width"] = image_size.width
                 kwargs["height"] = image_size.height
 
@@ -506,6 +530,11 @@ def generate_image(input: InputParameters) -> OutputParameters:
                     controlnet_images.append(controlnet_image)
 
                 kwargs["image"] = controlnet_images
+
+            kwargs["tile_window_height"] = input.tile_height
+            kwargs["tile_window_width"] = input.tile_width
+            kwargs["tile_stride_height"] = input.tile_stride_height
+            kwargs["tile_stride_width"] = input.tile_stride_width
 
             if input.noise_image_url is not None:
                 print("reading noise image")

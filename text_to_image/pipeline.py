@@ -3652,13 +3652,21 @@ def create_pipeline():
             latent_height = latents.shape[2]
             latent_width = latents.shape[3]
 
+            window_height = tile_window_height // 8
+            window_width = tile_window_width // 8
+            stride_height = tile_stride_height // 8
+            stride_width = tile_stride_width // 8
+
+            window_height = min(window_height, latent_height)
+            window_width = min(window_width, latent_width)
+
             views = get_views(
                 latent_height,
                 latent_width,
-                window_height=tile_window_height // 8,
-                window_width=tile_window_width // 8,
-                stride_height=tile_stride_height // 8,
-                stride_width=tile_stride_width // 8,
+                window_height=window_height,
+                window_width=window_width,
+                stride_height=stride_height,
+                stride_width=stride_width,
                 circular_padding=circular_padding,
             )
 
@@ -3728,6 +3736,7 @@ def create_pipeline():
                     count.zero_()
                     value.zero_()
                     for j, batch_view in enumerate(views_batch):
+                        print(f"Batch view: {batch_view}")
                         vb_size = len(batch_view)
                         latents_for_view = torch.cat(
                             [

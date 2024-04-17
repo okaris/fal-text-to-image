@@ -222,11 +222,11 @@ class InputParameters(OrderedBaseModel):
     )
     image_url: str | None = Field(
         default=None,
-        description="URL of the noise image to be used for the image generation.",
+        description="URL of image to use for image to image.",
     )
     noise_strength: float = Field(
         default=0.5,
-        description="The amount of noise to add to noise image for image. Only used if the noise_image_url is provided. 1.0 is complete noise and 0 is no noise.",
+        description="The amount of noise to add to noise image for image. Only used if the image_url is provided. 1.0 is complete noise and 0 is no noise.",
         ge=0.0,
         le=1.0,
     )
@@ -505,7 +505,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 "generator": torch.Generator("cuda").manual_seed(seed),
             }
 
-            if image_size is not None and input.noise_image_url is None:
+            if image_size is not None and input.image_url is None:
                 kwargs["width"] = image_size.width
                 kwargs["height"] = image_size.height
 
@@ -536,9 +536,9 @@ def generate_image(input: InputParameters) -> OutputParameters:
             kwargs["tile_stride_height"] = input.tile_stride_height
             kwargs["tile_stride_width"] = input.tile_stride_width
 
-            if input.noise_image_url is not None:
+            if input.image_url is not None:
                 print("reading noise image")
-                kwargs["image_for_noise"] = read_image_from_url(input.noise_image_url)
+                kwargs["image_for_noise"] = read_image_from_url(input.image_url)
                 kwargs["strength"] = input.noise_strength
 
             if ip_adapter is not None and ip_adapter.path is not None:
@@ -615,7 +615,7 @@ class MegaPipeline(
         initial_input = InputParameters(
             model_name=f"stabilityai/stable-diffusion-xl-base-1.0",
             prompt="Self-portrait oil painting, a beautiful cyborg with golden hair, 8k",
-            noise_image_url="https://storage.googleapis.com/falserverless/lora/1665_Girl_with_a_Pearl_Earring.jpg",
+            image_url="https://storage.googleapis.com/falserverless/lora/1665_Girl_with_a_Pearl_Earring.jpg",
             noise_strength=0.5,
             loras=[
                 LoraWeight(

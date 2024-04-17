@@ -340,25 +340,25 @@ class InputParameters(OrderedBaseModel):
         default=1024,
         description="The size of the tiles to be used for the image generation.",
         ge=128,
-        le=2048,
+        le=4096,
     )
     tile_height: int = Field(
         default=1024,
         description="The size of the tiles to be used for the image generation.",
         ge=128,
-        le=2048,
+        le=4096,
     )
     tile_stride_width: int = Field(
         default=512,
         description="The stride of the tiles to be used for the image generation.",
         ge=64,
-        le=1024,
+        le=2048,
     )
     tile_stride_height: int = Field(
         default=512,
         description="The stride of the tiles to be used for the image generation.",
         ge=64,
-        le=1024,
+        le=2048,
     )
 
     @root_validator

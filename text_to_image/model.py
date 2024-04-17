@@ -337,25 +337,25 @@ class InputParameters(OrderedBaseModel):
         description="If set to true, the safety checker will be enabled.",
     )
     tile_width: int = Field(
-        default=1024,
+        default=4096,
         description="The size of the tiles to be used for the image generation.",
         ge=128,
         le=4096,
     )
     tile_height: int = Field(
-        default=1024,
+        default=4096,
         description="The size of the tiles to be used for the image generation.",
         ge=128,
         le=4096,
     )
     tile_stride_width: int = Field(
-        default=512,
+        default=2048,
         description="The stride of the tiles to be used for the image generation.",
         ge=64,
         le=2048,
     )
     tile_stride_height: int = Field(
-        default=512,
+        default=2048,
         description="The stride of the tiles to be used for the image generation.",
         ge=64,
         le=2048,

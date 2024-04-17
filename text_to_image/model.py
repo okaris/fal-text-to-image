@@ -537,7 +537,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
             kwargs["tile_stride_width"] = input.tile_stride_width
 
             if input.image_url is not None:
-                print("reading noise image")
+                print("reading noise image", input.image_url)
                 kwargs["image_for_noise"] = read_image_from_url(input.image_url)
                 kwargs["strength"] = input.noise_strength
 

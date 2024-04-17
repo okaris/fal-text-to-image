@@ -1741,7 +1741,6 @@ def create_pipeline():
             # 4.1 Prepare image for noise
 
             if image_for_noise is not None:
-                print("Image for noise is not None")
                 image_for_noise = prepare_noise_image(
                     image_for_noise,
                 )
@@ -1754,8 +1753,6 @@ def create_pipeline():
                     )
                 else:
                     height, width = image_for_noise.shape[-2:]
-            else:
-                print("Image for noise is None")
 
             # 5. Prepare timesteps
             if image_for_noise is not None:
@@ -1769,8 +1766,6 @@ def create_pipeline():
                 latent_timestep = timesteps[:1].repeat(
                     batch_size * num_images_per_prompt
                 )
-                print("latent_timestep: ", latent_timestep)
-                print("timesteps: ", timesteps)
             else:
                 self.scheduler.set_timesteps(num_inference_steps, device=device)
                 timesteps = self.scheduler.timesteps
@@ -1806,13 +1801,6 @@ def create_pipeline():
             latent_height = latents.shape[2]
             latent_width = latents.shape[3]
 
-            print("latent_height: ", latent_height)
-            print("latent_width: ", latent_width)
-            print("tile_window_height: ", tile_window_height)
-            print("tile_window_width: ", tile_window_width)
-            print("tile_stride_height: ", tile_stride_height)
-            print("tile_stride_width: ", tile_stride_width)
-
             window_height = tile_window_height // 8
             window_width = tile_window_width // 8
             stride_height = tile_stride_height // 8
@@ -1830,8 +1818,6 @@ def create_pipeline():
                 stride_width=stride_width,
                 circular_padding=circular_padding,
             )
-
-            print("Views: ", views)
 
             views_batch = [
                 views[i : i + view_batch_size]
@@ -1966,7 +1952,6 @@ def create_pipeline():
                         torch._inductor.cudagraph_mark_step_begin()
                     # expand the latents if we are doing classifier free guidance
                     for j, batch_view in enumerate(views_batch):
-                        print("Batch view: ", batch_view)
                         vb_size = len(batch_view)
 
                         latents_for_view = torch.cat(
@@ -1980,15 +1965,21 @@ def create_pipeline():
                         if image:
                             # take a view of the image
                             if isinstance(image, list):
-                                control_image_for_view = [
-                                    image[j][
-                                        :,
-                                        :,
-                                        h_start * 8 : h_end * 8,
-                                        w_start * 8 : w_end * 8,
-                                    ]
-                                    for h_start, h_end, w_start, w_end in batch_view
-                                ]
+                                control_image_for_view = []
+                                for img in image:
+                                    control_image_for_view.append(
+                                        torch.cat(
+                                            [
+                                                img[
+                                                    :,
+                                                    :,
+                                                    h_start * 8 : h_end * 8,
+                                                    w_start * 8 : w_end * 8,
+                                                ]
+                                                for h_start, h_end, w_start, w_end in batch_view
+                                            ]
+                                        )
+                                    )
                             else:
                                 control_image_for_view = torch.cat(
                                     [
@@ -3598,7 +3589,6 @@ def create_pipeline():
                 assert False
 
             if image_for_noise is not None:
-                print("Image for noise is not None")
                 image_for_noise = prepare_noise_image(
                     image_for_noise,
                 )
@@ -3611,8 +3601,6 @@ def create_pipeline():
                     )
                 else:
                     height, width = image_for_noise.shape[-2:]
-            else:
-                print("Image for noise is None")
 
             # 5. Prepare timesteps
 
@@ -3627,8 +3615,7 @@ def create_pipeline():
                 latent_timestep = timesteps[:1].repeat(
                     batch_size * num_images_per_prompt
                 )
-                print("Latent timestep: ", latent_timestep)
-                print("Timesteps: ", timesteps)
+
             else:
                 self.scheduler.set_timesteps(num_inference_steps, device=device)
                 timesteps, num_inference_steps = retrieve_timesteps(
@@ -3665,8 +3652,6 @@ def create_pipeline():
             latent_height = latents.shape[2]
             latent_width = latents.shape[3]
 
-            print("Latent height: ", latent_height)
-
             views = get_views(
                 latent_height,
                 latent_width,
@@ -3677,13 +3662,10 @@ def create_pipeline():
                 circular_padding=circular_padding,
             )
 
-            print("views ", views)
-
             views_batch = [
                 views[i : i + view_batch_size]
                 for i in range(0, len(views), view_batch_size)
             ]
-            print(f"Len img2img tiles: {len(views_batch)}")
             views_scheduler_status = [copy.deepcopy(self.scheduler.__dict__)] * len(
                 views_batch
             )
@@ -3746,7 +3728,6 @@ def create_pipeline():
                     count.zero_()
                     value.zero_()
                     for j, batch_view in enumerate(views_batch):
-                        print(f"Batch view: {batch_view}")
                         vb_size = len(batch_view)
                         latents_for_view = torch.cat(
                             [
@@ -3758,15 +3739,21 @@ def create_pipeline():
                         if image:
                             # take a view of the image
                             if isinstance(image, list):
-                                control_image_for_view = [
-                                    image[j][
-                                        :,
-                                        :,
-                                        h_start * 8 : h_end * 8,
-                                        w_start * 8 : w_end * 8,
-                                    ]
-                                    for h_start, h_end, w_start, w_end in batch_view
-                                ]
+                                control_image_for_view = []
+                                for image_ in image:
+                                    control_image_for_view.append(
+                                        torch.cat(
+                                            [
+                                                image_[
+                                                    :,
+                                                    :,
+                                                    h_start * 8 : h_end * 8,
+                                                    w_start * 8 : w_end * 8,
+                                                ]
+                                                for h_start, h_end, w_start, w_end in batch_view
+                                            ]
+                                        )
+                                    )
                             else:
                                 control_image_for_view = torch.cat(
                                     [
@@ -3783,9 +3770,17 @@ def create_pipeline():
                             latents_for_view = latents_for_view.to(
                                 device=device, dtype=latents.dtype
                             )
-                            control_image_for_view = control_image_for_view.to(
-                                device=device, dtype=image.dtype
-                            )
+                            if isinstance(control_image_for_view, list):
+                                control_image_for_view = [
+                                    control_image.to(
+                                        device=device, dtype=self.vae.dtype
+                                    )
+                                    for control_image in control_image_for_view
+                                ]
+                            else:
+                                control_image_for_view = control_image_for_view.to(
+                                    device=device, dtype=image.dtype
+                                )
 
                         # rematch block's scheduler status
                         self.scheduler.__dict__.update(views_scheduler_status[j])
@@ -3816,19 +3811,18 @@ def create_pipeline():
                             control_model_input = latent_model_input
                             controlnet_prompt_embeds = prompt_embeds
 
-                        current_controlnet_keep = controlnet_keep[i]
-
-                        if isinstance(current_controlnet_keep, float):
-                            current_controlnet_float = current_controlnet_keep
-
+                        if isinstance(controlnet_keep[i], list):
+                            cond_scale = [
+                                c * s
+                                for c, s in zip(
+                                    controlnet_conditioning_scale, controlnet_keep[i]
+                                )
+                            ]
+                        else:
                             controlnet_cond_scale = controlnet_conditioning_scale
                             if isinstance(controlnet_cond_scale, list):
-                                controlnet_cond_scale_float = controlnet_cond_scale[0]
-                            elif isinstance(controlnet_cond_scale, float):
-                                controlnet_cond_scale_float = controlnet_cond_scale
-                            cond_scale = (
-                                controlnet_cond_scale_float * current_controlnet_float  # type: ignore
-                            )
+                                controlnet_cond_scale = controlnet_cond_scale[0]
+                            cond_scale = controlnet_cond_scale * controlnet_keep[i]
 
                         if (
                             isinstance(controlnet, MultiControlNetModel)
@@ -3900,13 +3894,6 @@ def create_pipeline():
                             w_start,
                             w_end,
                         ) in zip(latents_denoised_batch.chunk(vb_size), batch_view):
-                            print(
-                                "h_start, h_end, w_start, w_end: ",
-                                h_start,
-                                h_end,
-                                w_start,
-                                w_end,
-                            )
                             if circular_padding and w_end > latents.shape[3]:
                                 # Case for circular padding
                                 value[

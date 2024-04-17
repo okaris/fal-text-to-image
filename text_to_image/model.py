@@ -220,7 +220,7 @@ class InputParameters(OrderedBaseModel):
             "nsfw, cartoon, (epicnegative:0.9)",
         ],
     )
-    noise_image_url: str | None = Field(
+    image_url: str | None = Field(
         default=None,
         description="URL of the noise image to be used for the image generation.",
     )
@@ -568,8 +568,8 @@ def generate_image(input: InputParameters) -> OutputParameters:
 
 class TextToImageInputOverwrites(BaseModel):
     SCHEMA_IGNORES: ClassVar[set[str]] = {
-        "noise_image",
-        "strength",
+        "image_url",
+        "noise_strength",
     }
 
 

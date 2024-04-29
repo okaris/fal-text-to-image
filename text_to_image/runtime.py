@@ -361,7 +361,13 @@ class GlobalRuntime:
                     subfolder=ip_adapter.image_encoder_subpath,
                     torch_dtype=torch.float16,
                 )
-                pipe.image_encoder = self.execute_on_cuda(partial(encoder.to, "cuda"))
+                pipe.image_encoder = self.execute_on_cuda(
+                    partial(encoder.to, "cuda"), ignored_models=[pipe]
+                )
+            elif image_encoder_path:
+                raise NotImplementedError(
+                    "Loading image encoder weights from a local path is not supported yet."
+                )
 
             pipe.set_ip_adapter_scale(ip_adapter.scale)
 
@@ -423,7 +429,9 @@ class GlobalRuntime:
                     )
 
                 controlnet_models.append(
-                    self.execute_on_cuda(partial(controlnet_model.to, "cuda"))
+                    self.execute_on_cuda(
+                        partial(controlnet_model.to, "cuda"), ignored_models=[pipe]
+                    )
                 )
 
             print(

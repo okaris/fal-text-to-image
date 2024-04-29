@@ -435,6 +435,25 @@ class InputParameters(OrderedBaseModel):
                     "'ip_adapter.image_encoder_path' must be provided if 'ip_adapter.image_encoder_subpath' is provided.",
                 )
 
+            # if the ip adapter path is known and a plus model we can check if the image encoder path is provided
+            known_plus_models = [
+                "ip-adapter-plus_sdxl_vit-h.safetensors",
+                "ip-adapter-plus-face_sdxl_vit-h.safetensors",
+                "ip-adapter-plus-sdxl_vit-h.bin",
+                "ip-adapter-plus-face_sdxl_vit-h.bin",
+                "ip-adapter-plus_sd15.bin",
+                "ip-adapter-plus_sd15.safetensors",
+            ]
+            if weight_name in known_plus_models:
+                if image_encoder_path is None:
+                    raise invalid_data_error(
+                        ["ip_adapter", 0, "image_encoder_path"],
+                        """
+                        'ip_adapter.image_encoder_path' must be provided for plus models. Try using 'h94/IP-Adapter'
+                        and 'models/image_encoder' for the 'image_encoder_path' and 'image_encoder_subpath' respectively.
+                        """,
+                    )
+
         return values
 
 

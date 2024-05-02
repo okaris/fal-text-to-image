@@ -277,6 +277,37 @@ class GlobalRuntime:
 
         return self.models[model_key]
 
+    def load_ip_adapter(
+        self, pipeline, huggingface_key, directory, subfolder, weight_name
+    ):
+        args = []
+        kwargs = {}
+        load_fn = pipeline.load_ip_adapter
+
+        if huggingface_key:
+            args = [huggingface_key]
+            kwargs = {
+                "subfolder": subfolder,
+                "weight_name": weight_name,
+            }
+        elif directory:
+            args = [directory]
+            kwargs = {
+                "weight_name": weight_name,
+            }
+        else:
+            raise HTTPException(
+                500,
+                detail="IP adapter path or name was not found. This should be impossible?!",
+            )
+
+        # `load_ip_adapter` loads it to the pipeline's device
+        # https://github.com/huggingface/diffusers/commit/065f251766d5fa307f18814bfbb862f180755fe1
+        self.execute_on_cuda(
+            partial(load_fn, *args, **kwargs),
+            ignored_models=[pipeline],
+        )
+
     @contextmanager
     def add_ip_adapter(self, ip_adapter: IPAdapter | None, pipe) -> Iterator[None]:
         import torch
@@ -341,19 +372,13 @@ class GlobalRuntime:
 
         try:
             print("adding IP adapter to the pipe")
-            if ip_adapter_huggingface_key:
-                pipe.load_ip_adapter(
-                    ip_adapter_huggingface_key,
-                    subfolder=ip_adapter.model_subfolder,
-                    weight_name=ip_adapter.weight_name,
-                )
-            elif ip_adapter_directory:
-                pipe.load_ip_adapter(ip_adapter_directory, weight_name=ip_adapter_name)
-            else:
-                raise HTTPException(
-                    500,
-                    detail="IP adapter path or name was not found. This should be impossible?!",
-                )
+            self.load_ip_adapter(
+                pipe,
+                ip_adapter_huggingface_key,
+                ip_adapter_directory,
+                ip_adapter.model_subfolder,
+                ip_adapter.weight_name,
+            )
 
             if image_encoder_huggingface_key:
                 encoder = CLIPVisionModelWithProjection.from_pretrained(
@@ -374,8 +399,20 @@ class GlobalRuntime:
             yield
 
         finally:
+            import gc
+
+            #
+            new_image_encoder = pipe.image_encoder
+            if new_image_encoder is not None:
+                new_image_encoder.cpu()
             pipe.unload_ip_adapter()
+
             pipe.image_encoder = old_image_encoder
+            if new_image_encoder is not None:
+                del new_image_encoder
+
+            gc.collect()
+            torch.cuda.empty_cache()
 
     @contextmanager
     def add_controlnets(self, controlnets: list[ControlNet], pipe) -> Iterator[None]:
@@ -677,6 +714,7 @@ class GlobalRuntime:
                     not any(error_str in str(error) for error_str in __cuda_oom_errors)
                     or not cached_models
                 ):
+                    print(f"Not a CUDA OOM error, re-raising the error: {error}")
                     raise
 
                 # Since cached_models is sorted by last cache hit, we'll pop the the

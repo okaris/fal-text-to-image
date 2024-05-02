@@ -668,15 +668,18 @@ class MegaPipeline(
                 )
             ],
             guidance_scale=7.5,
-            num_inference_steps=20,
+            num_inference_steps=1,
             num_images=1,
             seed=42,
             model_architecture="sdxl",
             scheduler="Euler A",
             image_size=ImageSize(width=256, height=256),
         )
+
         _ = generate_image(initial_input)
+
         self.ready = True
+
         return
 
     @fal.endpoint("/health")

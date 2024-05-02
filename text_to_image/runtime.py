@@ -19,56 +19,6 @@ from pydantic import BaseModel, Field
 from text_to_image.pipeline import create_pipeline
 
 
-def download_or_hf_key(path: str) -> str:
-    if path.startswith("https://") or path.startswith("http://"):
-        return str(download_model_weights(path))
-    return path
-
-
-DeviceType = Literal["cpu", "cuda"]
-
-TEMP_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.8; rv:21.0) Gecko/20100101 Firefox/21.0"
-)
-ONE_MB = 1024**2
-CHUNK_SIZE = 32 * ONE_MB
-CACHE_PREFIX = ""
-
-SUPPORTED_SCHEDULERS = {
-    "DPM++ 2M": ("DPMSolverMultistepScheduler", {}),
-    "DPM++ 2M Karras": ("DPMSolverMultistepScheduler", {"use_karras_sigmas": True}),
-    "DPM++ 2M SDE": (
-        "DPMSolverMultistepScheduler",
-        {"algorithm_type": "sde-dpmsolver++"},
-    ),
-    "DPM++ 2M SDE Karras": (
-        "DPMSolverMultistepScheduler",
-        {"algorithm_type": "sde-dpmsolver++", "use_karras_sigmas": True},
-    ),
-    "Euler": ("EulerDiscreteScheduler", {}),
-    "Euler A": ("EulerAncestralDiscreteScheduler", {}),
-    "LCM": ("LCMScheduler", {}),
-}
-
-# Amount of RAM to use as buffer, in percentages.
-RAM_BUFFER_PERCENTAGE = 1 - 0.75
-
-
-@dataclass
-class Model:
-    pipeline: object
-    last_cache_hit: float = 0
-
-    def as_base(self) -> object:
-        self.last_cache_hit = time.monotonic()
-
-        pipe = self.pipeline
-        return pipe
-
-    def device(self) -> DeviceType:
-        return self.pipeline.device.type
-
-
 class LoraWeight(BaseModel):
     path: str = Field(
         description="URL or the path to the LoRA weights.",
@@ -103,53 +53,19 @@ class Embedding(BaseModel):
     )
 
 
-class ControlNet(BaseModel):
-    path: str = Field(
-        description="URL or the path to the control net weights.",
-        examples=[
-            "diffusers/controlnet-canny-sdxl-1.0",
-        ],
-    )
-    image_url: str = Field(
-        description="URL of the image to be used as the control net.",
-        examples=[
-            "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
-        ],
-    )
-    conditioning_scale: float = Field(
-        default=1.0,
-        description="""
-            The scale of the control net weight. This is used to scale the control net weight
-            before merging it with the base model.
-        """,
-        ge=0.0,
-        le=2.0,
-    )
-    start_percentage: float = Field(
-        default=0.0,
-        description="""
-            The percentage of the image to start applying the controlnet in terms of the total timesteps.
-        """,
-        ge=0.0,
-        le=1.0,
-    )
-    end_percentage: float = Field(
-        default=1.0,
-        description="""
-            The percentage of the image to end applying the controlnet in terms of the total timesteps.
-        """,
-        ge=0.0,
-        le=1.0,
-    )
-
-
 # make the ip adapter weight loader class
 class IPAdapter(BaseModel):
-    ip_adapter_image_url: str | None = Field(
+    ip_adapter_image_url: str | list[str] | None = Field(
         description="URL of the image to be used as the IP adapter.",
         examples=[
             "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
         ],
+    )
+    ip_adapter_mask_url: str | None = Field(
+        default=None,
+        description="""
+            The mask to use for the IP adapter. When using a mask, the ip-adapter image size and the mask size must be the same
+        """,
     )
     path: str | None = Field(
         description="URL or the path to the IP adapter weights.",
@@ -189,6 +105,121 @@ class IPAdapter(BaseModel):
         """,
         ge=0.0,
     )
+    scale_json: dict | None = Field(
+        description="""
+            The scale of the IP adapter weight. This is used to scale the IP adapter weight
+            before merging it with the base model.
+        """,
+    )
+
+
+class ControlNet(BaseModel):
+    path: str = Field(
+        description="URL or the path to the control net weights.",
+        examples=[
+            "diffusers/controlnet-canny-sdxl-1.0",
+        ],
+    )
+    image_url: str = Field(
+        description="URL of the image to be used as the control net.",
+        examples=[
+            "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
+        ],
+    )
+    mask_url: str | None = Field(
+        default=None,
+        description="""
+            The mask to use for the controlnet. When using a mask, the control image size and the mask size must be the same and divisible by 32.
+        """,
+    )
+    conditioning_scale: float = Field(
+        default=1.0,
+        description="""
+            The scale of the control net weight. This is used to scale the control net weight
+            before merging it with the base model.
+        """,
+        ge=0.0,
+        le=2.0,
+    )
+    start_percentage: float = Field(
+        default=0.0,
+        description="""
+            The percentage of the image to start applying the controlnet in terms of the total timesteps.
+        """,
+        ge=0.0,
+        le=1.0,
+    )
+    end_percentage: float = Field(
+        default=1.0,
+        description="""
+            The percentage of the image to end applying the controlnet in terms of the total timesteps.
+        """,
+        ge=0.0,
+        le=1.0,
+    )
+    ip_adapter_index: int = Field(
+        default=None,
+        description="""
+            The index of the IP adapter to be applied to the controlnet. This is only needed for InstantID ControlNets.
+        """,
+    )
+
+
+def download_or_hf_key(path: str) -> str:
+    if path.startswith("https://") or path.startswith("http://"):
+        return str(download_model_weights(path))
+    return path
+
+
+DeviceType = Literal["cpu", "cuda"]
+
+TEMP_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.8; rv:21.0) Gecko/20100101 Firefox/21.0"
+)
+ONE_MB = 1024**2
+CHUNK_SIZE = 32 * ONE_MB
+CACHE_PREFIX = ""
+
+SUPPORTED_SCHEDULERS = {
+    "DPM++ 2M": ("DPMSolverMultistepScheduler", {"final_sigmas_type": "zero"}),
+    "DPM++ 2M Karras": (
+        "DPMSolverMultistepScheduler",
+        {"use_karras_sigmas": True, "final_sigmas_type": "zero"},
+    ),
+    "DPM++ 2M SDE": (
+        "DPMSolverMultistepScheduler",
+        {"algorithm_type": "sde-dpmsolver++", "final_sigmas_type": "zero"},
+    ),
+    "DPM++ 2M SDE Karras": (
+        "DPMSolverMultistepScheduler",
+        {
+            "algorithm_type": "sde-dpmsolver++",
+            "use_karras_sigmas": True,
+            "final_sigmas_type": "zero",
+        },
+    ),
+    "Euler": ("EulerDiscreteScheduler", {}),
+    "Euler A": ("EulerAncestralDiscreteScheduler", {}),
+    "LCM": ("LCMScheduler", {}),
+}
+
+# Amount of RAM to use as buffer, in percentages.
+RAM_BUFFER_PERCENTAGE = 1 - 0.75
+
+
+@dataclass
+class Model:
+    pipeline: object
+    last_cache_hit: float = 0
+
+    def as_base(self) -> object:
+        self.last_cache_hit = time.monotonic()
+
+        pipe = self.pipeline
+        return pipe
+
+    def device(self) -> DeviceType:
+        return self.pipeline.device.type
 
 
 @dataclass
@@ -278,98 +309,167 @@ class GlobalRuntime:
         return self.models[model_key]
 
     @contextmanager
-    def add_ip_adapter(self, ip_adapter: IPAdapter | None, pipe) -> Iterator[None]:
+    def add_ip_adapter(
+        self, ip_adapters: list[IPAdapter] | None, pipe
+    ) -> Iterator[None]:
         import torch
         from transformers import CLIPVisionModelWithProjection
 
-        if not ip_adapter or not ip_adapter.path:
+        if not ip_adapters or len(ip_adapters) == 0:
             yield
             return
 
-        ip_adapter_huggingface_key = None
-        ip_adapter_directory = None
-        ip_adapter_name = None
-        try:
-            if ip_adapter.path.startswith("https://"):
-                print("Assuming IP adapter path is a URL")
-                ip_adapter_path = download_or_hf_key(ip_adapter.path)
-                ip_adapter_directory = ip_adapter_path.parent
-                ip_adapter_name = ip_adapter_path.name
-            elif ip_adapter.path.startswith("http://"):
-                # raise an error if the path is an http link
+        ip_adapter_huggingface_keys_or_paths: list[str | None] = []
+        ip_adapter_subfolders: list[str | None] = []
+        ip_adapter_names: list[str | None] = []
+        ip_adapter_scales: list[float | dict] = []
+
+        image_encoder_huggingface_keys_or_paths: list[str | None] = []
+        image_encoder_subfolders: list[str | None] = []
+
+        for ip_adapter in ip_adapters:
+            ip_adapter_huggingface_key_or_path = None
+            ip_adapter_subfolder = None
+            ip_adapter_name = None
+
+            if ip_adapter.path is None:
                 raise HTTPException(
                     422,
-                    detail="HTTP links are not supported for IP adapter weights. Please use HTTPS links or local paths.",
+                    detail="IP adapter path is required.",
                 )
-            else:
-                print("Assuming IP adapter path is a huggingface model")
-                ip_adapter_huggingface_key = ip_adapter.path  # type: ignore
-        except Exception as e:
-            raise HTTPException(
-                422,
-                detail=f"Failed to download IP adapter: {e}",
-            )
 
-        # try downloading the image encoder weights if they are provided
-        image_encoder_huggingface_key = None
-        image_encoder_path = None
-        if ip_adapter.image_encoder_path:
             try:
-                if ip_adapter.image_encoder_path.startswith("https://"):
-                    print("Assuming image encoder path is a URL")
-                    image_encoder_path = download_model_weights(
-                        ip_adapter.image_encoder_path,
-                    )
-
-                elif ip_adapter.image_encoder_path.startswith("http://"):
+                if ip_adapter.path.startswith("https://"):
+                    print("Assuming IP adapter path is a URL")
+                    ip_adapter_path = download_or_hf_key(ip_adapter.path)
+                    ip_adapter_huggingface_key_or_path = ip_adapter_path.parent
+                    ip_adapter_subfolder = None
+                    ip_adapter_name = ip_adapter_path.name
+                elif ip_adapter.path.startswith("http://"):
                     # raise an error if the path is an http link
                     raise HTTPException(
                         422,
-                        detail="HTTP links are not supported for image encoder weights. Please use HTTPS links or local paths.",
+                        detail="HTTP links are not supported for IP adapter weights. Please use HTTPS links or local paths.",
                     )
                 else:
-                    print("Assuming image encoder path is a huggingface model")
-                    image_encoder_huggingface_key = ip_adapter.image_encoder_path  # type: ignore
+                    print("Assuming IP adapter path is a huggingface model")
+                    ip_adapter_huggingface_key_or_path = ip_adapter.path  # type: ignore
+                    ip_adapter_subfolder = ip_adapter.model_subfolder
+                    ip_adapter_name = ip_adapter.weight_name
             except Exception as e:
-                print(e)
                 raise HTTPException(
                     422,
-                    detail=f"Failed to load IP adapter: {e}",
+                    detail=f"Failed to download IP adapter: {e}",
                 )
+
+            # try downloading the image encoder weights if they are provided
+            image_encoder_huggingface_key_or_path = None
+            image_encoder_subfolder = None
+
+            if ip_adapter.image_encoder_path:
+                try:
+                    if ip_adapter.image_encoder_path.startswith("https://"):
+                        print("Assuming image encoder path is a URL")
+                        image_encoder_huggingface_key_or_path = download_model_weights(
+                            ip_adapter.image_encoder_path,
+                        )
+
+                    elif ip_adapter.image_encoder_path.startswith("http://"):
+                        # raise an error if the path is an http link
+                        raise HTTPException(
+                            422,
+                            detail="HTTP links are not supported for image encoder weights. Please use HTTPS links or local paths.",
+                        )
+                    else:
+                        print("Assuming image encoder path is a huggingface model")
+                        image_encoder_huggingface_key_or_path = ip_adapter.image_encoder_path  # type: ignore
+                        image_encoder_subfolder = ip_adapter.image_encoder_subpath
+                except Exception as e:
+                    print(e)
+                    raise HTTPException(
+                        422,
+                        detail=f"Failed to load IP adapter: {e}",
+                    )
+
+            ip_adapter_scale: float | dict | None = None
+            if ip_adapter.scale:
+                ip_adapter_scale = ip_adapter.scale
+            elif ip_adapter.scale_json:
+                ip_adapter_scale = ip_adapter.scale_json
+            else:
+                raise HTTPException(
+                    422,
+                    detail="IP adapter scale or scale_json is required.",
+                )
+
+            ip_adapter_huggingface_keys_or_paths.append(
+                ip_adapter_huggingface_key_or_path
+            )
+            ip_adapter_subfolders.append(ip_adapter_subfolder)
+            ip_adapter_names.append(ip_adapter_name)
+            ip_adapter_scales.append(ip_adapter_scale)
+
+            image_encoder_huggingface_keys_or_paths.append(
+                image_encoder_huggingface_key_or_path
+            )
+            image_encoder_subfolders.append(image_encoder_subfolder)
+
+        ip_adapter_data = [
+            ip_adapter_huggingface_keys_or_paths,
+            ip_adapter_subfolders,
+            ip_adapter_names,
+            ip_adapter_scales,
+            image_encoder_huggingface_keys_or_paths,
+            image_encoder_subfolders,
+        ]
+
+        if not all(len(arr) == len(ip_adapters) for arr in ip_adapter_data):
+            error_details = (
+                f"IP Adapter count and array counts must match. Found {len(ip_adapters)} IP Adapters, "
+                f"{len(ip_adapter_huggingface_keys_or_paths)} huggingface keys or paths, {len(ip_adapter_subfolders)} subfolders, "
+                f"{len(ip_adapter_names)} names, {len(ip_adapter_scales)} scales, "
+                f"{len(image_encoder_huggingface_keys_or_paths)} image encoder huggingface keys or paths, "
+                f"and {len(image_encoder_subfolders)} image encoder subfolders."
+            )
+            raise HTTPException(422, error_details)
 
         old_image_encoder = pipe.image_encoder
 
         try:
-            print("adding IP adapter to the pipe")
-            if ip_adapter_huggingface_key:
-                pipe.load_ip_adapter(
-                    ip_adapter_huggingface_key,
-                    subfolder=ip_adapter.model_subfolder,
-                    weight_name=ip_adapter.weight_name,
-                )
-            elif ip_adapter_directory:
-                pipe.load_ip_adapter(ip_adapter_directory, weight_name=ip_adapter_name)
-            else:
-                raise HTTPException(
-                    500,
-                    detail="IP adapter path or name was not found. This should be impossible?!",
-                )
+            print("adding IP adapters to the pipe")
+            pipe.load_ip_adapter(
+                ip_adapter_huggingface_keys_or_paths,
+                subfolder=ip_adapter_subfolders,
+                weight_name=ip_adapter_names,
+            )
 
-            if image_encoder_huggingface_key:
-                encoder = CLIPVisionModelWithProjection.from_pretrained(
-                    image_encoder_huggingface_key,
-                    subfolder=ip_adapter.image_encoder_subpath,
-                    torch_dtype=torch.float16,
-                )
-                pipe.image_encoder = self.execute_on_cuda(
-                    partial(encoder.to, "cuda"), ignored_models=[pipe]
-                )
-            elif image_encoder_path:
-                raise NotImplementedError(
-                    "Loading image encoder weights from a local path is not supported yet."
-                )
+            # Get first image encoder key that is not None, some ip adapters may not have image encoders.
+            # We also need the corresponding image encoder path
+            # Right now we only support one image encoder which is not ideal for combining normal and plus adapters.
 
-            pipe.set_ip_adapter_scale(ip_adapter.scale)
+            image_encoder_huggingface_key_or_path, image_encoder_subfolder = next(
+                (
+                    (key, path)
+                    for key, path in zip(
+                        image_encoder_huggingface_keys_or_paths,
+                        image_encoder_subfolders,
+                    )
+                    if key is not None
+                ),
+                (None, None),
+            )
+
+            encoder = CLIPVisionModelWithProjection.from_pretrained(
+                image_encoder_huggingface_key_or_path,
+                subfolder=image_encoder_subfolder,
+                torch_dtype=torch.float16,
+            )
+
+            pipe.image_encoder = self.execute_on_cuda(
+                partial(encoder.to, "cuda"), ignored_models=[pipe]
+            )
+
+            pipe.set_ip_adapter_scale(ip_adapter_scales)
 
             yield
 
@@ -559,7 +659,7 @@ class GlobalRuntime:
         loras: list[LoraWeight],
         embeddings: list[Embedding],
         controlnets: list[ControlNet],
-        ip_adapter: IPAdapter | None,
+        ip_adapter: list[IPAdapter] | None = None,
         clip_skip: int = 0,
         scheduler: str | None = None,
         model_architecture: str | None = None,

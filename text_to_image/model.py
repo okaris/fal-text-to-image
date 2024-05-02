@@ -2,15 +2,23 @@ from contextlib import contextmanager
 from functools import lru_cache, partial
 from typing import Any, ClassVar, Literal
 from urllib.request import Request, urlopen
-import PIL.Image
 
 import fal
+import PIL.Image
 from fal import cached
 from fal.toolkit import Image, ImageSizeInput, get_image_size
 from fal.toolkit.image import ImageSize
 from pydantic import BaseModel, Field, root_validator
 
-from text_to_image.runtime import SUPPORTED_SCHEDULERS, GlobalRuntime, filter_by, LoraWeight, Embedding, ControlNet, IPAdapter
+from text_to_image.runtime import (
+    SUPPORTED_SCHEDULERS,
+    ControlNet,
+    Embedding,
+    GlobalRuntime,
+    IPAdapter,
+    LoraWeight,
+    filter_by,
+)
 
 
 class OrderedBaseModel(BaseModel):
@@ -70,10 +78,12 @@ def read_image_from_url(url: str):
 
     return image
 
+
 def create_empty_mask_for_image(image: PIL.Image.Image) -> PIL.Image.Image:
     import numpy as np
 
     return PIL.Image.fromarray(np.ones_like(np.array(image)) * 255)
+
 
 class InputParameters(OrderedBaseModel):
     model_name: str = Field(
@@ -368,7 +378,6 @@ def generate_image(input: InputParameters) -> OutputParameters:
     all Stable Diffusion variants, checkpoints and LoRAs from HuggingFace (🤗) and CivitAI.
     """
     import torch
-    import PIL
 
     session = load_session()
 
@@ -413,7 +422,9 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 kwargs["control_guidance_end"] = [
                     x.end_percentage for x in input.controlnets
                 ]
-                kwargs["ip_adapter_index"] = [x.ip_adapter_index for x in input.controlnets]
+                kwargs["ip_adapter_index"] = [
+                    x.ip_adapter_index for x in input.controlnets
+                ]
 
                 # download all the controlnet images
                 controlnet_images = []
@@ -426,7 +437,9 @@ def generate_image(input: InputParameters) -> OutputParameters:
                         controlnet_mask = read_image_from_url(controlnet.mask_url)
                         controlnet_masks.append(controlnet_mask)
                     else:
-                        controlnet_masks.append(create_empty_mask_for_image(controlnet_image))
+                        controlnet_masks.append(
+                            create_empty_mask_for_image(controlnet_image)
+                        )
 
                 kwargs["image"] = controlnet_images
                 kwargs["control_mask"] = controlnet_masks
@@ -465,9 +478,14 @@ def generate_image(input: InputParameters) -> OutputParameters:
                         )
                     else:
                         print("creating empty mask for image")
-                        current_image = ip_adapter_images[-1][0] if isinstance(ip_adapter.ip_adapter_image_url, list) else ip_adapter_images[-1]
-                        ip_adapter_masks.append(create_empty_mask_for_image(current_image))
-                
+                        current_image = (
+                            ip_adapter_images[-1][0]
+                            if isinstance(ip_adapter.ip_adapter_image_url, list)
+                            else ip_adapter_images[-1]
+                        )
+                        ip_adapter_masks.append(
+                            create_empty_mask_for_image(current_image)
+                        )
 
             if len(ip_adapter_images) > 0:
                 kwargs["ip_adapter_image"] = ip_adapter_images
@@ -527,7 +545,7 @@ class MegaPipeline(
 
     requirements = [
         # "diffusers==0.27.2",
-        "git+https://github.com/huggingface/diffusers.git",
+        "git+https://github.com/huggingface/diffusers.git@0d7c4790235ac00b4524b492bc2a680dcc5cf6b0",
         "transformers",
         "accelerate",
         "torch>=2.1",
@@ -589,9 +607,9 @@ class MegaPipeline(
                     image_encoder_path="h94/IP-Adapter",
                     image_encoder_subpath="models/image_encoder",
                     scale_json={
-                        "down": { "block_2": [0.0, 0.0] }, #Composition
-                        "up": { "block_0": [0.0, 1.0, 0.0] } #Style
-                    }
+                        "down": {"block_2": [0.0, 0.0]},  # Composition
+                        "up": {"block_0": [0.0, 1.0, 0.0]},  # Style
+                    },
                 ),
             ],
             guidance_scale=7.5,

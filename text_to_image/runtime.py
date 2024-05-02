@@ -423,7 +423,7 @@ class GlobalRuntime:
             image_encoder_subfolders,
         ]
 
-        if not all(len(arr) == len(ip_adapters) for arr in ip_adapter_data):
+        if not all(len(arr) == len(ip_adapters) for arr in ip_adapter_data):  # type: ignore # mypy bug
             error_details = (
                 f"IP Adapter count and array counts must match. Found {len(ip_adapters)} IP Adapters, "
                 f"{len(ip_adapter_huggingface_keys_or_paths)} huggingface keys or paths, {len(ip_adapter_subfolders)} subfolders, "

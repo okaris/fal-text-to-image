@@ -2166,7 +2166,7 @@ def create_pipeline():
                                         )
                                     )
                                     ip_adapter_image_embeds = encoder_hidden_states[1]
-                                    
+
                                 down_block_res_samples = None
                                 mid_block_res_sample = None
 

@@ -2155,7 +2155,6 @@ def create_pipeline():
                                         controlnet_cond_scale * controlnet_keep[i]
                                     )
 
-                                # Bold assumption that the first controlnet is the one that is used for the InstantID model
                                 if (
                                     ip_adapter_image_embeds is None
                                     and ip_adapter_image is not None
@@ -2167,16 +2166,7 @@ def create_pipeline():
                                         )
                                     )
                                     ip_adapter_image_embeds = encoder_hidden_states[1]
-
-                                # if ip_adapter_image_embeds is not None:
-                                #     id_controlnet_prompt_embeds = ip_adapter_image_embeds[0]
-                                #     id_controlnet_prompt_embeds_2 = ip_adapter_image_embeds[1]
-                                # else:
-                                #     if ip_adapter_image is not None:
-                                #         encoder_hidden_states = self.unet.process_encoder_hidden_states(prompt_embeds, {"image_embeds": image_embeds})
-                                #         id_controlnet_prompt_embeds = encoder_hidden_states[1][0].squeeze(1)
-                                #         id_controlnet_prompt_embeds_2 = encoder_hidden_states[1][1].squeeze(1)
-
+                                    
                                 down_block_res_samples = None
                                 mid_block_res_sample = None
 
@@ -3994,7 +3984,6 @@ def create_pipeline():
                             control_model_input = latent_model_input
                             controlnet_prompt_embeds = prompt_embeds
 
-                        # Bold assumption that the first controlnet is the one that is used for the InstantID model
                         if (
                             ip_adapter_image_embeds is None
                             and ip_adapter_image is not None
@@ -4005,15 +3994,6 @@ def create_pipeline():
                                 )
                             )
                             ip_adapter_image_embeds = encoder_hidden_states[1]
-
-                        # if ip_adapter_image_embeds is not None:
-                        #     id_controlnet_prompt_embeds = ip_adapter_image_embeds[0]
-                        #     id_controlnet_prompt_embeds_2 = ip_adapter_image_embeds[1]
-                        # else:
-                        #     if ip_adapter_image is not None:
-                        #         encoder_hidden_states = self.unet.process_encoder_hidden_states(prompt_embeds, {"image_embeds": image_embeds})
-                        #         id_controlnet_prompt_embeds = encoder_hidden_states[1][0].squeeze(1)
-                        #         id_controlnet_prompt_embeds_2 = encoder_hidden_states[1][1].squeeze(1)
 
                         if isinstance(controlnet_keep[i], list):
                             cond_scale = [

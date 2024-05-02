@@ -285,42 +285,42 @@ class InputParameters(OrderedBaseModel):
             # make sure that if the ip adapter path is not None, then the ip adapter image url is not None
             if ip_adapter_path is not None and ip_adapter_image_url is None:
                 raise invalid_data_error(
-                    ["ip_adapter", 0, "ip_adapter_image_url"],
+                    ["ip_adapter", i, "ip_adapter_image_url"],
                     "'ip_adapter.ip_adapter_image_url' must be provided if 'ip_adapter.path' is provided.",
                 )
 
             # make sure that if the image encoder path is not None, then the image encoder subpath is not None
             if image_encoder_path is not None and image_encoder_subpath is None:
                 raise invalid_data_error(
-                    ["ip_adapter", 0, "image_encoder_subpath"],
+                    ["ip_adapter", i, "image_encoder_subpath"],
                     "'ip_adapter.image_encoder_subpath' must be provided if 'ip_adapter.image_encoder_path' is provided.",
                 )
 
             # make sure that if the weight name is not None, the path is not None
             if weight_name is not None and ip_adapter_path is None:
                 raise invalid_data_error(
-                    ["ip_adapter", 0, "weight_name"],
+                    ["ip_adapter", i, "weight_name"],
                     "'ip_adapter.path' must be provided if 'ip_adapter.weight_name' is provided.",
                 )
 
             # make sure that if the model subfolder is not None, the path is not None
             if model_subfolder is not None and ip_adapter_path is None:
                 raise invalid_data_error(
-                    ["ip_adapter", 0, "model_subfolder"],
+                    ["ip_adapter", i, "model_subfolder"],
                     "'ip_adapter.path' must be provided if 'ip_adapter.model_subfolder' is provided.",
                 )
 
             # make sure that if the encoder path is not None, the path is not None
             if image_encoder_path is not None and ip_adapter_path is None:
                 raise invalid_data_error(
-                    ["ip_adapter", 0, "image_encoder_path"],
+                    ["ip_adapter", i, "image_encoder_path"],
                     "'ip_adapter.path' must be provided if 'ip_adapter.image_encoder_path' is provided.",
                 )
 
             # make sure that if the encoder subpath is not None, the image_encoder_path is not None
             if image_encoder_subpath is not None and image_encoder_path is None:
                 raise invalid_data_error(
-                    ["ip_adapter", 0, "image_encoder_subpath"],
+                    ["ip_adapter", i, "image_encoder_subpath"],
                     "'ip_adapter.image_encoder_path' must be provided if 'ip_adapter.image_encoder_subpath' is provided.",
                 )
 
@@ -336,7 +336,7 @@ class InputParameters(OrderedBaseModel):
             if weight_name in known_plus_models:
                 if image_encoder_path is None:
                     raise invalid_data_error(
-                        ["ip_adapter", 0, "image_encoder_path"],
+                        ["ip_adapter", i, "image_encoder_path"],
                         """
                         'ip_adapter.image_encoder_path' must be provided for plus models. Try using 'h94/IP-Adapter'
                         and 'models/image_encoder' for the 'image_encoder_path' and 'image_encoder_subpath' respectively.
@@ -440,9 +440,11 @@ def generate_image(input: InputParameters) -> OutputParameters:
                         controlnet_masks.append(
                             create_empty_mask_for_image(controlnet_image)
                         )
+                if len(controlnet_images) > 0:
+                    kwargs["image"] = controlnet_images
 
-                kwargs["image"] = controlnet_images
-                kwargs["control_mask"] = controlnet_masks
+                if len(controlnet_masks) > 0:
+                    kwargs["control_mask"] = controlnet_masks
 
             kwargs["tile_window_height"] = input.tile_height
             kwargs["tile_window_width"] = input.tile_width
@@ -544,7 +546,6 @@ class MegaPipeline(
     machine_type = "GPU"
 
     requirements = [
-        # "diffusers==0.27.2",
         "git+https://github.com/huggingface/diffusers.git@0d7c4790235ac00b4524b492bc2a680dcc5cf6b0",
         "transformers",
         "accelerate",

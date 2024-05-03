@@ -25,7 +25,11 @@ def create_pipeline():
     import PIL.Image
     import torch
     import torch.nn.functional as F
-    from diffusers.image_processor import PipelineImageInput, VaeImageProcessor
+    from diffusers.image_processor import (
+        IPAdapterMaskProcessor,
+        PipelineImageInput,
+        VaeImageProcessor,
+    )
     from diffusers.loaders import (
         FromSingleFileMixin,
         IPAdapterMixin,
@@ -365,6 +369,7 @@ def create_pipeline():
             self.image_processor = VaeImageProcessor(
                 vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True
             )
+            self.ip_adapter_mask_processor = IPAdapterMaskProcessor()
             self.control_image_processor = VaeImageProcessor(
                 vae_scale_factor=self.vae_scale_factor,
                 do_convert_rgb=True,
@@ -730,6 +735,9 @@ def create_pipeline():
             self,
             ip_adapter_image,
             ip_adapter_image_embeds,
+            ip_adapter_mask,
+            width,
+            height,
             device,
             num_images_per_prompt,
             do_classifier_free_guidance,
@@ -804,7 +812,12 @@ def create_pipeline():
                         )
                     image_embeds.append(single_image_embeds)
 
-            return image_embeds
+            ip_adapter_masks = self.ip_adapter_mask_processor.preprocess(
+                ip_adapter_mask, height=height, width=width
+            )
+            ip_adapter_masks = [mask.unsqueeze(0) for mask in ip_adapter_masks]
+
+            return image_embeds, ip_adapter_masks
 
         # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.prepare_extra_step_kwargs
         def prepare_extra_step_kwargs(self, generator, eta):
@@ -1363,6 +1376,8 @@ def create_pipeline():
             prompt: str | list[str] = None,
             prompt_2: str | list[str] | None = None,
             image: PipelineImageInput = None,
+            control_mask: PipelineImageInput | None = None,
+            ip_adapter_index: int | list[int] | None = None,
             height: int | None = None,
             width: int | None = None,
             num_inference_steps: int = 50,
@@ -1382,6 +1397,7 @@ def create_pipeline():
             negative_pooled_prompt_embeds: torch.FloatTensor | None = None,
             ip_adapter_image: PipelineImageInput | None = None,
             ip_adapter_image_embeds: list[torch.FloatTensor] | None = None,
+            ip_adapter_mask: PipelineImageInput | None = None,
             output_type: str | None = "pil",
             return_dict: bool = True,
             cross_attention_kwargs: dict[str, Any] | None = None,
@@ -1631,7 +1647,9 @@ def create_pipeline():
 
             self._guidance_scale = guidance_scale
             self._clip_skip = clip_skip
-            self._cross_attention_kwargs = cross_attention_kwargs
+            self._cross_attention_kwargs = (
+                cross_attention_kwargs if cross_attention_kwargs is not None else {}
+            )
             self._denoising_end = denoising_end
 
             # 2. Define call parameters
@@ -1692,13 +1710,18 @@ def create_pipeline():
 
             # 3.2 Encode ip_adapter_image
             if ip_adapter_image is not None or ip_adapter_image_embeds is not None:
-                image_embeds = self.prepare_ip_adapter_image_embeds(
+                image_embeds, ip_adapter_masks = self.prepare_ip_adapter_image_embeds(
                     ip_adapter_image,
                     ip_adapter_image_embeds,
+                    ip_adapter_mask,
+                    width,
+                    height,
                     device,
                     batch_size * num_images_per_prompt,
                     self.do_classifier_free_guidance,
                 )
+            if isinstance(ip_adapter_index, int):
+                ip_adapter_index = [ip_adapter_index]
 
             # 4. Prepare image
             if isinstance(controlnet, ControlNetModel):
@@ -1753,6 +1776,35 @@ def create_pipeline():
                     )
                 else:
                     height, width = image_for_noise.shape[-2:]
+
+            # 4.2 Prepare control mask
+            controlnet_masks = []
+            if control_mask is not None:
+                for mask in control_mask:
+                    mask = np.array(mask)
+                    mask_tensor = torch.from_numpy(mask).to(
+                        device=device, dtype=prompt_embeds.dtype
+                    )
+                    mask_tensor = mask_tensor[:, :, 0] / 255.0
+                    print(np.average(mask_tensor.cpu().numpy()))
+                    mask_tensor = mask_tensor[None, None]
+                    h, w = mask_tensor.shape[-2:]
+                    control_mask_list = []
+                    for scale in [8, 8, 8, 16, 16, 16, 32, 32, 32]:
+                        # Python uses IEEE 754 rounding rules, we need to add a small value to round like the unet model
+                        w_n = round((w + 0.01) / 8)
+                        h_n = round((h + 0.01) / 8)
+                        if scale in [16, 32]:
+                            w_n = round((w_n + 0.01) / 2)
+                            h_n = round((h_n + 0.01) / 2)
+                        if scale == 32:
+                            w_n = round((w_n + 0.01) / 2)
+                            h_n = round((h_n + 0.01) / 2)
+                        scale_mask_weight_image_tensor = F.interpolate(
+                            mask_tensor, (h_n, w_n), mode="bilinear"
+                        )
+                        control_mask_list.append(scale_mask_weight_image_tensor)
+                    controlnet_masks.append(control_mask_list)
 
             # 5. Prepare timesteps
             if image_for_noise is not None:
@@ -2103,19 +2155,78 @@ def create_pipeline():
                                         controlnet_cond_scale * controlnet_keep[i]
                                     )
 
-                                (
-                                    down_block_res_samples,
-                                    mid_block_res_sample,
-                                ) = self.controlnet(
-                                    control_model_input,
-                                    t,
-                                    encoder_hidden_states=controlnet_prompt_embeds,
-                                    controlnet_cond=control_image_for_view,
-                                    conditioning_scale=cond_scale,
-                                    guess_mode=guess_mode,
-                                    added_cond_kwargs=controlnet_added_cond_kwargs,
-                                    return_dict=False,
-                                )
+                                if (
+                                    ip_adapter_image_embeds is None
+                                    and ip_adapter_image is not None
+                                ):
+                                    encoder_hidden_states = (
+                                        self.unet.process_encoder_hidden_states(
+                                            prompt_embeds,
+                                            {"image_embeds": image_embeds},
+                                        )
+                                    )
+                                    ip_adapter_image_embeds = encoder_hidden_states[1]
+
+                                down_block_res_samples = None
+                                mid_block_res_sample = None
+
+                                for controlnet_index in range(
+                                    len(self.controlnet.nets)
+                                ):
+                                    ipa_index = ip_adapter_index[controlnet_index]
+                                    if ipa_index is not None:
+                                        control_prompt_embeds = ip_adapter_image_embeds[
+                                            ipa_index
+                                        ].squeeze(1)
+                                    else:
+                                        control_prompt_embeds = controlnet_prompt_embeds
+
+                                    down_samples, mid_sample = self.controlnet.nets[
+                                        controlnet_index
+                                    ](
+                                        control_model_input,
+                                        t,
+                                        encoder_hidden_states=control_prompt_embeds,
+                                        controlnet_cond=control_image_for_view[
+                                            controlnet_index
+                                        ],
+                                        conditioning_scale=cond_scale[controlnet_index],
+                                        guess_mode=guess_mode,
+                                        added_cond_kwargs=controlnet_added_cond_kwargs,
+                                        return_dict=False,
+                                    )
+
+                                    if (
+                                        len(controlnet_masks) > controlnet_index
+                                        and controlnet_masks[controlnet_index]
+                                        is not None
+                                    ):
+                                        down_samples = [
+                                            down_sample * mask_weight
+                                            for down_sample, mask_weight in zip(
+                                                down_samples,
+                                                controlnet_masks[controlnet_index],
+                                            )
+                                        ]
+                                        mid_sample *= controlnet_masks[
+                                            controlnet_index
+                                        ][-1]
+
+                                    if (
+                                        down_block_res_samples is None
+                                        and mid_block_res_sample is None
+                                    ):
+                                        down_block_res_samples = down_samples
+                                        mid_block_res_sample = mid_sample
+                                    else:
+                                        down_block_res_samples = [
+                                            samples_prev + samples_curr
+                                            for samples_prev, samples_curr in zip(
+                                                down_block_res_samples, down_samples
+                                            )
+                                        ]
+                                        mid_block_res_sample += mid_sample
+
                             else:
                                 down_block_res_samples = None
                                 mid_block_res_sample = None
@@ -2144,6 +2255,10 @@ def create_pipeline():
                             or ip_adapter_image_embeds is not None
                         ):
                             added_cond_kwargs["image_embeds"] = image_embeds
+                            if ip_adapter_masks is not None:
+                                self._cross_attention_kwargs[
+                                    "ip_adapter_masks"
+                                ] = ip_adapter_masks
 
                         # predict the noise residual
                         noise_pred = self.unet(
@@ -2498,6 +2613,7 @@ def create_pipeline():
             self.image_processor = VaeImageProcessor(
                 vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True
             )
+            self.ip_adapter_mask_processor = IPAdapterMaskProcessor()
             self.control_image_processor = VaeImageProcessor(
                 vae_scale_factor=self.vae_scale_factor,
                 do_convert_rgb=True,
@@ -2786,6 +2902,9 @@ def create_pipeline():
             self,
             ip_adapter_image,
             ip_adapter_image_embeds,
+            ip_adapter_mask,
+            width,
+            height,
             device,
             num_images_per_prompt,
             do_classifier_free_guidance,
@@ -2860,7 +2979,11 @@ def create_pipeline():
                         )
                     image_embeds.append(single_image_embeds)
 
-            return image_embeds
+            ip_adapter_masks = self.ip_adapter_mask_processor.preprocess(
+                ip_adapter_mask, height=height, width=width
+            )
+            ip_adapter_masks = [mask.unsqueeze(0) for mask in ip_adapter_masks]
+            return image_embeds, ip_adapter_masks
 
         # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.run_safety_checker
         def run_safety_checker(self, image, device, dtype):
@@ -3270,6 +3393,7 @@ def create_pipeline():
             self,
             prompt: str | list[str] = None,
             image: PipelineImageInput = None,
+            control_mask: PipelineImageInput | None = None,
             height: int | None = None,
             width: int | None = None,
             num_inference_steps: int = 50,
@@ -3286,6 +3410,7 @@ def create_pipeline():
             negative_prompt_embeds: torch.FloatTensor | None = None,
             ip_adapter_image: PipelineImageInput | None = None,
             ip_adapter_image_embeds: list[torch.FloatTensor] | None = None,
+            ip_adapter_mask: PipelineImageInput | None = None,
             output_type: str | None = "pil",
             return_dict: bool = True,
             cross_attention_kwargs: dict[str, Any] | None = None,
@@ -3482,7 +3607,9 @@ def create_pipeline():
 
             self._guidance_scale = guidance_scale
             self._clip_skip = clip_skip
-            self._cross_attention_kwargs = cross_attention_kwargs
+            self._cross_attention_kwargs = (
+                cross_attention_kwargs if cross_attention_kwargs is not None else {}
+            )
 
             # 2. Define call parameters
             if prompt is not None and isinstance(prompt, str):
@@ -3537,13 +3664,19 @@ def create_pipeline():
                 prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
 
             if ip_adapter_image is not None or ip_adapter_image_embeds is not None:
-                image_embeds = self.prepare_ip_adapter_image_embeds(
+                image_embeds, ip_adapter_masks = self.prepare_ip_adapter_image_embeds(
                     ip_adapter_image,
                     ip_adapter_image_embeds,
+                    ip_adapter_mask,
+                    width,
+                    height,
                     device,
                     batch_size * num_images_per_prompt,
                     self.do_classifier_free_guidance,
                 )
+
+            if isinstance(ip_adapter_index, int):
+                ip_adapter_index = [ip_adapter_index]
 
             # 4. Prepare image
             if isinstance(controlnet, ControlNetModel):
@@ -3601,6 +3734,34 @@ def create_pipeline():
                     )
                 else:
                     height, width = image_for_noise.shape[-2:]
+
+            # 4.2 Prepare control mask
+            controlnet_masks = []
+            if control_mask is not None:
+                for mask in control_mask:
+                    mask = np.array(mask)
+                    mask_tensor = torch.from_numpy(mask).to(
+                        device=device, dtype=prompt_embeds.dtype
+                    )
+                    mask_tensor = mask_tensor[:, :, 0] / 255.0
+                    mask_tensor = mask_tensor[None, None]
+                    h, w = mask_tensor.shape[-2:]
+                    control_mask_list = []
+                    for scale in [8, 8, 8, 16, 16, 16, 32, 32, 32]:
+                        # Python uses IEEE 754 rounding rules, we need to add a small value to round like the unet model
+                        w_n = round((w + 0.01) / 8)
+                        h_n = round((h + 0.01) / 8)
+                        if scale in [16, 32]:
+                            w_n = round((w_n + 0.01) / 2)
+                            h_n = round((h_n + 0.01) / 2)
+                        if scale == 32:
+                            w_n = round((w_n + 0.01) / 2)
+                            h_n = round((h_n + 0.01) / 2)
+                        scale_mask_weight_image_tensor = F.interpolate(
+                            mask_tensor, (h_n, w_n), mode="bilinear"
+                        )
+                        control_mask_list.append(scale_mask_weight_image_tensor)
+                    controlnet_masks.append(control_mask_list)
 
             # 5. Prepare timesteps
 
@@ -3700,6 +3861,9 @@ def create_pipeline():
                 if ip_adapter_image is not None or ip_adapter_image_embeds is not None
                 else None
             )
+
+            if ip_adapter_masks is not None:
+                self._cross_attention_kwargs["ip_adapter_masks"] = ip_adapter_masks
 
             # 7.2 Create tensor stating which controlnets to keep
             controlnet_keep = []
@@ -3820,6 +3984,17 @@ def create_pipeline():
                             control_model_input = latent_model_input
                             controlnet_prompt_embeds = prompt_embeds
 
+                        if (
+                            ip_adapter_image_embeds is None
+                            and ip_adapter_image is not None
+                        ):
+                            encoder_hidden_states = (
+                                self.unet.process_encoder_hidden_states(
+                                    prompt_embeds, {"image_embeds": image_embeds}
+                                )
+                            )
+                            ip_adapter_image_embeds = encoder_hidden_states[1]
+
                         if isinstance(controlnet_keep[i], list):
                             cond_scale = [
                                 c * s
@@ -3839,18 +4014,57 @@ def create_pipeline():
                         ):
                             down_block_res_samples, mid_block_res_sample = None, None
                         else:
-                            (
-                                down_block_res_samples,
-                                mid_block_res_sample,
-                            ) = self.controlnet(
-                                control_model_input,
-                                t,
-                                encoder_hidden_states=controlnet_prompt_embeds,
-                                controlnet_cond=control_image_for_view,
-                                conditioning_scale=cond_scale,
-                                guess_mode=guess_mode,
-                                return_dict=False,
-                            )
+                            for controlnet_index in range(len(self.controlnet.nets)):
+                                ipa_index = ip_adapter_index[controlnet_index]
+                                if ipa_index is not None:
+                                    control_prompt_embeds = ip_adapter_image_embeds[
+                                        ipa_index
+                                    ].squeeze(1)
+                                else:
+                                    control_prompt_embeds = controlnet_prompt_embeds
+
+                                down_samples, mid_sample = self.controlnet.nets[
+                                    controlnet_index
+                                ](
+                                    control_model_input,
+                                    t,
+                                    encoder_hidden_states=control_prompt_embeds,
+                                    controlnet_cond=control_image_for_view[
+                                        controlnet_index
+                                    ],
+                                    conditioning_scale=cond_scale[controlnet_index],
+                                    guess_mode=guess_mode,
+                                    added_cond_kwargs=controlnet_added_cond_kwargs,
+                                    return_dict=False,
+                                )
+
+                                if (
+                                    len(controlnet_masks) > controlnet_index
+                                    and controlnet_masks[controlnet_index] is not None
+                                ):
+                                    down_samples = [
+                                        down_sample * mask_weight
+                                        for down_sample, mask_weight in zip(
+                                            down_samples,
+                                            controlnet_masks[controlnet_index],
+                                        )
+                                    ]
+                                    mid_sample *= controlnet_masks[controlnet_index][-1]
+
+                                if (
+                                    down_block_res_samples is None
+                                    and mid_block_res_sample is None
+                                ):
+                                    down_block_res_samples = down_samples
+                                    mid_block_res_sample = mid_sample
+                                else:
+                                    down_block_res_samples = [
+                                        samples_prev + samples_curr
+                                        for samples_prev, samples_curr in zip(
+                                            down_block_res_samples, down_samples
+                                        )
+                                    ]
+                                    mid_block_res_sample += mid_sample
 
                         if guess_mode and self.do_classifier_free_guidance:
                             # Inferred ControlNet only for the conditional batch.

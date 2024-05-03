@@ -4,12 +4,21 @@ from typing import Any, ClassVar, Literal
 from urllib.request import Request, urlopen
 
 import fal
+import PIL.Image
 from fal import cached
 from fal.toolkit import Image, ImageSizeInput, get_image_size
 from fal.toolkit.image import ImageSize
 from pydantic import BaseModel, Field, root_validator
 
-from text_to_image.runtime import SUPPORTED_SCHEDULERS, GlobalRuntime, filter_by
+from text_to_image.runtime import (
+    SUPPORTED_SCHEDULERS,
+    ControlNet,
+    Embedding,
+    GlobalRuntime,
+    IPAdapter,
+    LoraWeight,
+    filter_by,
+)
 
 
 class OrderedBaseModel(BaseModel):
@@ -48,7 +57,7 @@ def invalid_data_error(field_name: list, message: str):
 
 @lru_cache(maxsize=64)
 def read_image_from_url(url: str):
-    import PIL
+    import PIL.Image
     from fastapi import HTTPException
 
     try:
@@ -70,126 +79,10 @@ def read_image_from_url(url: str):
     return image
 
 
-class LoraWeight(BaseModel):
-    path: str = Field(
-        description="URL or the path to the LoRA weights.",
-        examples=[
-            "https://civitai.com/api/download/models/135931",
-            "https://filebin.net/3chfqasxpqu21y8n/my-custom-lora-v1.safetensors",
-        ],
-    )
-    scale: float = Field(
-        default=1.0,
-        description="""
-            The scale of the LoRA weight. This is used to scale the LoRA weight
-            before merging it with the base model.
-        """,
-        ge=0.0,
-        le=1.0,
-    )
+def create_empty_mask_for_image(image: PIL.Image.Image) -> PIL.Image.Image:
+    import numpy as np
 
-
-class Embedding(BaseModel):
-    path: str = Field(
-        description="URL or the path to the embedding weights.",
-        examples=[
-            "https://storage.googleapis.com/falserverless/style_lora/emb_our_test_1.safetensors",
-        ],
-    )
-    tokens: list[str] = Field(
-        default=["<s0>", "<s1>"],
-        description="""
-            The tokens to map the embedding weights to. Use these tokens in your prompts.
-        """,
-    )
-
-
-# make the ip adapter weight loader class
-class IPAdapter(BaseModel):
-    ip_adapter_image_url: str | None = Field(
-        description="URL of the image to be used as the IP adapter.",
-        examples=[
-            "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
-        ],
-    )
-    path: str | None = Field(
-        description="URL or the path to the IP adapter weights.",
-        examples=[
-            "h94/IP-Adapter",
-        ],
-    )
-    model_subfolder: str | None = Field(
-        description="Subfolder in the model directory where the IP adapter weights are stored.",
-        examples=[
-            "sdxl_models",
-        ],
-    )
-    weight_name: str | None = Field(
-        description="Name of the weight file.",
-        examples=[
-            "ip-adapter-plus_sdxl_vit-h.safetensors",
-        ],
-    )
-    image_encoder_path: str | None = Field(
-        description="URL or the path to the image encoder weights.",
-        examples=[
-            "h94/IP-Adapter",
-        ],
-    )
-    image_encoder_subpath: str | None = Field(
-        description="Subpath to the image encoder weights.",
-        examples=[
-            "models/image_encoder",
-        ],
-    )
-    scale: float = Field(
-        default=1.0,
-        description="""
-            The scale of the IP adapter weight. This is used to scale the IP adapter weight
-            before merging it with the base model.
-        """,
-        ge=0.0,
-    )
-
-
-class ControlNet(BaseModel):
-    path: str = Field(
-        description="URL or the path to the control net weights.",
-        examples=[
-            "diffusers/controlnet-canny-sdxl-1.0",
-        ],
-    )
-    image_url: str = Field(
-        description="URL of the image to be used as the control net.",
-        examples=[
-            "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
-        ],
-    )
-    conditioning_scale: float = Field(
-        default=1.0,
-        description="""
-            The scale of the control net weight. This is used to scale the control net weight
-            before merging it with the base model.
-        """,
-        ge=0.0,
-        le=2.0,
-    )
-    start_percentage: float = Field(
-        default=0.0,
-        description="""
-            The percentage of the image to start applying the controlnet in terms of the total timesteps.
-        """,
-        ge=0.0,
-        le=1.0,
-    )
-    end_percentage: float = Field(
-        default=1.0,
-        description="""
-            The percentage of the image to end applying the controlnet in terms of the total timesteps.
-        """,
-        ge=0.0,
-        le=1.0,
-    )
+    return PIL.Image.fromarray(np.ones_like(np.array(image)) * 255)
 
 
 class InputParameters(OrderedBaseModel):
@@ -262,6 +155,31 @@ class InputParameters(OrderedBaseModel):
         description="""
             The IP adapter to use for the image generation.
         """,
+    )
+    image_encoder_path: str | None = Field(
+        description="""
+            The path to the image encoder model to use for the image generation.
+        """,
+        default=None,
+        examples=[
+            "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
+        ],
+    )
+    image_encoder_subfolder: str | None = Field(
+        description="""
+            The subfolder of the image encoder model to use for the image generation.
+        """,
+        default=None,
+        examples=[],
+    )
+    image_encoder_weight_name: str | None = Field(
+        description="""
+            The weight name of the image encoder model to use for the image generation.
+        """,
+        default="pytorch_model.bin",
+        examples=[
+            "pytorch_model.bin",
+        ],
     )
     seed: int | None = Field(
         default=None,
@@ -373,67 +291,21 @@ class InputParameters(OrderedBaseModel):
         # get the ip adapter
         ip_adapters = values.get("ip_adapter", [])
 
-        if ip_adapters:
-            if len(ip_adapters) > 1:
-                raise invalid_data_error(
-                    ["ip_adapter", 1], "Only one IP adapter is supported at the moment."
-                )
-            else:
-                ip_adapter = ip_adapters[0]
+        image_encoder_path = values.get("image_encoder_path", [])
+        # get the image encoder subpath
+        image_encoder_subfolder = values.get("image_encoder_subfolder", [])
+        image_encoder_weight_name = values.get("image_encoder_weight_name", [])
+
+        # ensure that the if the image_encoder_subfolder is provided, the image_encoder_subfolder is provided
+        if image_encoder_subfolder is not None and image_encoder_path is None:
+            raise invalid_data_error(
+                ["image_encoder_subfolder"],
+                "'image_encoder_subfolder' must be provided if 'image_encoder_path' is provided.",
+            )
+
+        for i, ip_adapter in enumerate(ip_adapters):
             # get the ip adapter path
-            ip_adapter_path = ip_adapter.path
-            # get the ip adapter image url
-            ip_adapter_image_url = ip_adapter.ip_adapter_image_url
-            # get the image encoder path
-            image_encoder_path = ip_adapter.image_encoder_path
-            # get the image encoder subpath
-            image_encoder_subpath = ip_adapter.image_encoder_subpath
-            # get the weight name
             weight_name = ip_adapter.weight_name
-            # get the model subfolder
-            model_subfolder = ip_adapter.model_subfolder
-
-            # make sure that if the ip adapter path is not None, then the ip adapter image url is not None
-            if ip_adapter_path is not None and ip_adapter_image_url is None:
-                raise invalid_data_error(
-                    ["ip_adapter", 0, "ip_adapter_image_url"],
-                    "'ip_adapter.ip_adapter_image_url' must be provided if 'ip_adapter.path' is provided.",
-                )
-
-            # make sure that if the image encoder path is not None, then the image encoder subpath is not None
-            if image_encoder_path is not None and image_encoder_subpath is None:
-                raise invalid_data_error(
-                    ["ip_adapter", 0, "image_encoder_subpath"],
-                    "'ip_adapter.image_encoder_subpath' must be provided if 'ip_adapter.image_encoder_path' is provided.",
-                )
-
-            # make sure that if the weight name is not None, the path is not None
-            if weight_name is not None and ip_adapter_path is None:
-                raise invalid_data_error(
-                    ["ip_adapter", 0, "weight_name"],
-                    "'ip_adapter.path' must be provided if 'ip_adapter.weight_name' is provided.",
-                )
-
-            # make sure that if the model subfolder is not None, the path is not None
-            if model_subfolder is not None and ip_adapter_path is None:
-                raise invalid_data_error(
-                    ["ip_adapter", 0, "model_subfolder"],
-                    "'ip_adapter.path' must be provided if 'ip_adapter.model_subfolder' is provided.",
-                )
-
-            # make sure that if the encoder path is not None, the path is not None
-            if image_encoder_path is not None and ip_adapter_path is None:
-                raise invalid_data_error(
-                    ["ip_adapter", 0, "image_encoder_path"],
-                    "'ip_adapter.path' must be provided if 'ip_adapter.image_encoder_path' is provided.",
-                )
-
-            # make sure that if the encoder subpath is not None, the image_encoder_path is not None
-            if image_encoder_subpath is not None and image_encoder_path is None:
-                raise invalid_data_error(
-                    ["ip_adapter", 0, "image_encoder_subpath"],
-                    "'ip_adapter.image_encoder_path' must be provided if 'ip_adapter.image_encoder_subpath' is provided.",
-                )
 
             # if the ip adapter path is known and a plus model we can check if the image encoder path is provided
             known_plus_models = [
@@ -447,10 +319,10 @@ class InputParameters(OrderedBaseModel):
             if weight_name in known_plus_models:
                 if image_encoder_path is None:
                     raise invalid_data_error(
-                        ["ip_adapter", 0, "image_encoder_path"],
+                        ["image_encoder_path"],
                         """
-                        'ip_adapter.image_encoder_path' must be provided for plus models. Try using 'h94/IP-Adapter'
-                        and 'models/image_encoder' for the 'image_encoder_path' and 'image_encoder_subpath' respectively.
+                        'image_encoder_path' must be provided for plus models. Try using 'laion/CLIP-ViT-H-14-laion2B-s32B-b79K'
+                        and 'models/image_encoder' for the 'image_encoder_path' and 'image_encoder_subfolder' respectively.
                         """,
                     )
 
@@ -496,22 +368,19 @@ def generate_image(input: InputParameters) -> OutputParameters:
     if input.image_size is not None:
         image_size = get_image_size(input.image_size)
 
-    # we already validate there is max 1 ip adapter
-    if len(input.ip_adapter) > 0:
-        ip_adapter = input.ip_adapter[0]
-    else:
-        ip_adapter = None
-
     with wrap_excs():
         with session.load_model(
             input.model_name,
             loras=input.loras,
             embeddings=input.embeddings,
             controlnets=input.controlnets,
-            ip_adapter=ip_adapter,
+            ip_adapter=input.ip_adapter,
             clip_skip=input.clip_skip,
             scheduler=input.scheduler,
             model_architecture=input.model_architecture,
+            image_encoder_path=input.image_encoder_path,
+            image_encoder_subfolder=input.image_encoder_subfolder,
+            image_encoder_weight_name=input.image_encoder_weight_name,
         ) as pipe:
             seed = input.seed or torch.seed()
 
@@ -539,16 +408,29 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 kwargs["control_guidance_end"] = [
                     x.end_percentage for x in input.controlnets
                 ]
+                kwargs["ip_adapter_index"] = [
+                    x.ip_adapter_index for x in input.controlnets
+                ]
 
                 # download all the controlnet images
                 controlnet_images = []
+                controlnet_masks = []
                 for controlnet in input.controlnets:
                     # TODO replace with something that doesn't download the image every time
                     controlnet_image = read_image_from_url(controlnet.image_url)
-
                     controlnet_images.append(controlnet_image)
+                    if controlnet.mask_url is not None:
+                        controlnet_mask = read_image_from_url(controlnet.mask_url)
+                        controlnet_masks.append(controlnet_mask)
+                    else:
+                        controlnet_masks.append(
+                            create_empty_mask_for_image(controlnet_image)
+                        )
+                if len(controlnet_images) > 0:
+                    kwargs["image"] = controlnet_images
 
-                kwargs["image"] = controlnet_images
+                if len(controlnet_masks) > 0:
+                    kwargs["control_mask"] = controlnet_masks
 
             kwargs["tile_window_height"] = input.tile_height
             kwargs["tile_window_width"] = input.tile_width
@@ -560,10 +442,44 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 kwargs["image_for_noise"] = read_image_from_url(input.image_url)
                 kwargs["strength"] = input.noise_strength
 
-            if ip_adapter is not None and ip_adapter.path is not None:
-                kwargs["ip_adapter_image"] = read_image_from_url(
-                    ip_adapter.ip_adapter_image_url
-                )
+            ip_adapter_images = []
+            ip_adapter_masks = []
+            for i, ip_adapter in enumerate(input.ip_adapter):
+                ip_adapter = input.ip_adapter[i]
+                if ip_adapter.ip_adapter_image_url is not None:
+                    if isinstance(ip_adapter.ip_adapter_image_url, list):
+                        ip_adapter_images.append(
+                            [
+                                read_image_from_url(url)
+                                for url in ip_adapter.ip_adapter_image_url
+                            ]
+                        )
+                    else:
+                        ip_adapter_images.append(
+                            read_image_from_url(ip_adapter.ip_adapter_image_url)
+                        )
+
+                    if ip_adapter.ip_adapter_mask_url is not None:
+                        print("reading mask image", ip_adapter.ip_adapter_mask_url)
+                        ip_adapter_masks.append(
+                            read_image_from_url(ip_adapter.ip_adapter_mask_url)
+                        )
+                    else:
+                        print("creating empty mask for image")
+                        current_image = (
+                            ip_adapter_images[-1][0]
+                            if isinstance(ip_adapter.ip_adapter_image_url, list)
+                            else ip_adapter_images[-1]
+                        )
+                        ip_adapter_masks.append(
+                            create_empty_mask_for_image(current_image)
+                        )
+
+            if len(ip_adapter_images) > 0:
+                kwargs["ip_adapter_image"] = ip_adapter_images
+
+            if len(ip_adapter_masks) > 0:
+                kwargs["ip_adapter_mask"] = ip_adapter_masks
 
             print(f"Generating {input.num_images} images...")
             make_inference = partial(pipe, **kwargs)
@@ -616,7 +532,7 @@ class MegaPipeline(
     machine_type = "GPU"
 
     requirements = [
-        "diffusers==0.27.2",
+        "git+https://github.com/huggingface/diffusers.git@0d7c4790235ac00b4524b492bc2a680dcc5cf6b0",
         "transformers",
         "accelerate",
         "torch>=2.1",
@@ -628,13 +544,14 @@ class MegaPipeline(
         "google-cloud-storage",
         "psutil",
         "peft",
+        "huggingface-hub==0.20.2",
     ]
 
     def setup(self) -> None:
         initial_input = InputParameters(
             model_name=f"stabilityai/stable-diffusion-xl-base-1.0",
             prompt="Self-portrait oil painting, a beautiful cyborg with golden hair, 8k",
-            image_url="https://storage.googleapis.com/falserverless/lora/1665_Girl_with_a_Pearl_Earring.jpg",
+            # image_url="https://storage.googleapis.com/falserverless/lora/1665_Girl_with_a_Pearl_Earring.jpg",
             noise_strength=0.5,
             loras=[
                 LoraWeight(
@@ -652,28 +569,42 @@ class MegaPipeline(
                 ControlNet(
                     path="diffusers/controlnet-canny-sdxl-1.0",
                     image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
+                    mask_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.mask.png",
                     conditioning_scale=1.0,
                     start_percentage=0.0,
                     end_percentage=1.0,
                 )
             ],
+            image_encoder_path="h94/IP-Adapter",
+            image_encoder_subfolder="models/image_encoder",
             ip_adapter=[
                 IPAdapter(
                     ip_adapter_image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
+                    ip_adapter_mask_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.mask.png",
                     path="h94/IP-Adapter",
                     model_subfolder="sdxl_models",
                     weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
-                    image_encoder_path="h94/IP-Adapter",
-                    image_encoder_subpath="models/image_encoder",
-                )
+                    scale=1.0,
+                ),
+                IPAdapter(
+                    ip_adapter_image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
+                    ip_adapter_mask_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.mask.png",
+                    path="h94/IP-Adapter",
+                    model_subfolder="sdxl_models",
+                    weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
+                    scale_json={
+                        "down": {"block_2": [0.0, 0.0]},  # Composition
+                        "up": {"block_0": [0.0, 1.0, 0.0]},  # Style
+                    },
+                ),
             ],
             guidance_scale=7.5,
-            num_inference_steps=1,
+            num_inference_steps=20,
             num_images=1,
             seed=42,
             model_architecture="sdxl",
             scheduler="Euler A",
-            image_size=ImageSize(width=256, height=256),
+            image_size=ImageSize(width=1024, height=1024),
         )
 
         _ = generate_image(initial_input)

@@ -268,6 +268,7 @@ class GlobalRuntime:
 
         model_key = (model_name, arch)
         if model_key not in self.models:
+            print(f"Loading model {model_name}...")
             if arch == "sdxl":
                 pipeline_cls = sdxl_pipeline_cls
             else:
@@ -295,6 +296,8 @@ class GlobalRuntime:
                 pipe.safety_checker = None
 
             self.models[model_key] = Model(pipe)
+        else:
+            print(f"Model {model_name} is already loaded, reusing it.")
 
         return self.models[model_key]
 
@@ -849,7 +852,9 @@ class GlobalRuntime:
             if self.models[model_id].device() == device
             if self.models[model_id].pipeline not in ignored_models
         ]
-        models.sort(key=lambda model_id: self.models[model_id].last_cache_hit)
+        models.sort(
+            key=lambda model_id: self.models[model_id].last_cache_hit, reverse=True
+        )
         return models
 
     def offload_model_to_cpu(self, model_id: tuple[str, ...]):

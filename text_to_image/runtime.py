@@ -231,7 +231,7 @@ class GlobalRuntime:
 
         self.feature_extractor = AutoFeatureExtractor.from_pretrained(
             "CompVis/stable-diffusion-safety-checker",
-            torch_dtype="float16",
+            torch_dtype=torch.float16,
         )
 
         self.safety_checker = StableDiffusionSafetyChecker.from_pretrained(
@@ -260,7 +260,7 @@ class GlobalRuntime:
         pipe.set_adapters(adapter_names=adapter_names, adapter_weights=lora_scales)
         pipe.fuse_lora()
 
-    def get_model(self, model_name: str, arch: str) -> Model:
+    def get_model(self, model_name: str, arch: str, variant: str | None) -> Model:
         import torch
         from diffusers.pipelines.controlnet import MultiControlNetModel
 
@@ -278,12 +278,14 @@ class GlobalRuntime:
                     model_name,
                     torch_dtype=torch.float16,
                     local_files_only=True,
+                    variant=variant,
                 )
             else:
                 pipe = pipeline_cls.from_pretrained(
                     model_name,
                     torch_dtype=torch.float16,
                     controlnet=MultiControlNetModel([]),
+                    variant=variant,
                 )
 
             if hasattr(pipe, "watermark"):
@@ -701,7 +703,10 @@ class GlobalRuntime:
         clip_skip: int = 0,
         scheduler: str | None = None,
         model_architecture: str | None = None,
+        variant: str | None = None,
     ) -> Iterator[object | None]:
+        import torch
+
         model_name = download_or_hf_key(model_name)
 
         if model_architecture is None:
@@ -716,9 +721,9 @@ class GlobalRuntime:
         else:
             arch = model_architecture
 
-        model = self.get_model(str(model_name), arch=arch)
+        model = self.get_model(str(model_name), arch=arch, variant=variant)
         pipe = model.as_base()
-        pipe = self.execute_on_cuda(partial(pipe.to, "cuda"))
+        pipe = self.execute_on_cuda(partial(pipe.to, "cuda", dtype=torch.float16))
 
         if clip_skip:
             print(f"Ignoring clip_skip={clip_skip} for now, it's not supported yet!")
@@ -874,7 +879,12 @@ class GlobalRuntime:
             gc.collect()
 
         model = self.models[model_id]
-        model.pipeline = model.pipeline.to("cpu")
+        # do the parts individually to avoid the safety checker
+        # from being offloaded to CPU
+        model.pipeline.unet = model.pipeline.unet.to("cpu")
+        model.pipeline.vae = model.pipeline.vae.to("cpu")
+        model.pipeline.text_encoder = model.pipeline.text_encoder.to("cpu")
+        model.pipeline.text_encoder_2 = model.pipeline.text_encoder_2.to("cpu")
 
     def empty_cache(self):
         import torch
@@ -890,9 +900,8 @@ class GlobalRuntime:
         import numpy as np
         import torch
 
-        safety_checker_input = self.feature_extractor(images, return_tensors="pt").to(
-            "cuda"
-        )
+        image_tensors = self.feature_extractor(images, return_tensors="pt")
+        safety_checker_input = self.execute_on_cuda(partial(image_tensors.to, "cuda"))
 
         np_image = [np.array(val) for val in images]
 

@@ -94,6 +94,10 @@ class InputParameters(OrderedBaseModel):
             "SG161222/Realistic_Vision_V2.0",
         ],
     )
+    variant: str | None = Field(
+        default=None,
+        description="The variant of the model to use for huggingface models, e.g. 'fp16'.",
+    )
     prompt: str = Field(
         description="The prompt to use for generating the image. Be as descriptive as possible for best results.",
         examples=[
@@ -381,6 +385,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
             image_encoder_path=input.image_encoder_path,
             image_encoder_subfolder=input.image_encoder_subfolder,
             image_encoder_weight_name=input.image_encoder_weight_name,
+            variant=input.variant,
         ) as pipe:
             seed = input.seed or torch.seed()
 
@@ -415,6 +420,12 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 # download all the controlnet images
                 controlnet_images = []
                 controlnet_masks = []
+
+                # if any controlnet has a mask we need to make an empty one
+                any_controlnet_has_mask = any(
+                    controlnet.mask_url is not None for controlnet in input.controlnets
+                )
+
                 for controlnet in input.controlnets:
                     # TODO replace with something that doesn't download the image every time
                     controlnet_image = read_image_from_url(controlnet.image_url)
@@ -422,10 +433,11 @@ def generate_image(input: InputParameters) -> OutputParameters:
                     if controlnet.mask_url is not None:
                         controlnet_mask = read_image_from_url(controlnet.mask_url)
                         controlnet_masks.append(controlnet_mask)
-                    else:
+                    elif any_controlnet_has_mask:
                         controlnet_masks.append(
                             create_empty_mask_for_image(controlnet_image)
                         )
+
                 if len(controlnet_images) > 0:
                     kwargs["image"] = controlnet_images
 
@@ -444,6 +456,13 @@ def generate_image(input: InputParameters) -> OutputParameters:
 
             ip_adapter_images = []
             ip_adapter_masks = []
+
+            # if any ip adapter has a mask we need to make an empty one
+            any_ip_adapter_has_mask = any(
+                ip_adapter.ip_adapter_mask_url is not None
+                for ip_adapter in input.ip_adapter
+            )
+
             for i, ip_adapter in enumerate(input.ip_adapter):
                 ip_adapter = input.ip_adapter[i]
                 if ip_adapter.ip_adapter_image_url is not None:
@@ -464,15 +483,9 @@ def generate_image(input: InputParameters) -> OutputParameters:
                         ip_adapter_masks.append(
                             read_image_from_url(ip_adapter.ip_adapter_mask_url)
                         )
-                    else:
-                        print("creating empty mask for image")
-                        current_image = (
-                            ip_adapter_images[-1][0]
-                            if isinstance(ip_adapter.ip_adapter_image_url, list)
-                            else ip_adapter_images[-1]
-                        )
+                    elif any_ip_adapter_has_mask:
                         ip_adapter_masks.append(
-                            create_empty_mask_for_image(current_image)
+                            create_empty_mask_for_image(ip_adapter_images[-1])
                         )
 
             if len(ip_adapter_images) > 0:
@@ -525,6 +538,7 @@ class ImageToImageInput(ImageToImageInputOverwrites, InputParameters):
 class MegaPipeline(
     fal.App,
     _scheduler="nomad",
+    # _scheduler="kubernetes",
     max_concurrency=2,
     keep_alive=300,
     resolver="uv",  # type: ignore
@@ -551,7 +565,6 @@ class MegaPipeline(
         initial_input = InputParameters(
             model_name=f"stabilityai/stable-diffusion-xl-base-1.0",
             prompt="Self-portrait oil painting, a beautiful cyborg with golden hair, 8k",
-            # image_url="https://storage.googleapis.com/falserverless/lora/1665_Girl_with_a_Pearl_Earring.jpg",
             noise_strength=0.5,
             loras=[
                 LoraWeight(
@@ -569,18 +582,24 @@ class MegaPipeline(
                 ControlNet(
                     path="diffusers/controlnet-canny-sdxl-1.0",
                     image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
+                    conditioning_scale=1.0,
+                    start_percentage=0.0,
+                    end_percentage=1.0,
+                ),
+                ControlNet(
+                    path="diffusers/controlnet-depth-sdxl-1.0",
+                    image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
                     mask_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.mask.png",
                     conditioning_scale=1.0,
                     start_percentage=0.0,
                     end_percentage=1.0,
-                )
+                ),
             ],
             image_encoder_path="h94/IP-Adapter",
             image_encoder_subfolder="models/image_encoder",
             ip_adapter=[
                 IPAdapter(
                     ip_adapter_image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
-                    ip_adapter_mask_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.mask.png",
                     path="h94/IP-Adapter",
                     model_subfolder="sdxl_models",
                     weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
@@ -602,7 +621,6 @@ class MegaPipeline(
             num_inference_steps=20,
             num_images=1,
             seed=42,
-            model_architecture="sdxl",
             scheduler="Euler A",
             image_size=ImageSize(width=1024, height=1024),
         )

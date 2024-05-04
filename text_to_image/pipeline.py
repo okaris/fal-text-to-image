@@ -812,10 +812,12 @@ def create_pipeline():
                         )
                     image_embeds.append(single_image_embeds)
 
-            ip_adapter_masks = self.ip_adapter_mask_processor.preprocess(
-                ip_adapter_mask, height=height, width=width
-            )
-            ip_adapter_masks = [mask.unsqueeze(0) for mask in ip_adapter_masks]
+            ip_adapter_masks = None
+            if ip_adapter_mask is not None:
+                ip_adapter_masks = self.ip_adapter_mask_processor.preprocess(
+                    ip_adapter_mask, height=height, width=width
+                )
+                ip_adapter_masks = [mask.unsqueeze(0) for mask in ip_adapter_masks]
 
             return image_embeds, ip_adapter_masks
 
@@ -874,34 +876,36 @@ def create_pipeline():
 
             else:
                 # make sure the VAE is in float32 mode, as it overflows in float16
-                if self.vae.config.force_upcast:
-                    image = image.float()
-                    self.vae.to(dtype=torch.float32)
+                try:
+                    if self.vae.config.force_upcast:
+                        image = image.float()
+                        self.vae.to(dtype=torch.float32)
 
-                if isinstance(generator, list) and len(generator) != batch_size:
-                    raise ValueError(
-                        f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
-                        f" size of {batch_size}. Make sure the batch size matches the length of the generators."
-                    )
-
-                elif isinstance(generator, list):
-                    init_latents = [
-                        retrieve_latents(
-                            self.vae.encode(image[i : i + 1]), generator=generator[i]
+                    if isinstance(generator, list) and len(generator) != batch_size:
+                        raise ValueError(
+                            f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
+                            f" size of {batch_size}. Make sure the batch size matches the length of the generators."
                         )
-                        for i in range(batch_size)
-                    ]
-                    init_latents = torch.cat(init_latents, dim=0)
-                else:
-                    init_latents = retrieve_latents(
-                        self.vae.encode(image), generator=generator
-                    )
 
-                if self.vae.config.force_upcast:
-                    self.vae.to(dtype)
+                    elif isinstance(generator, list):
+                        init_latents = [
+                            retrieve_latents(
+                                self.vae.encode(image[i : i + 1]),
+                                generator=generator[i],
+                            )
+                            for i in range(batch_size)
+                        ]
+                        init_latents = torch.cat(init_latents, dim=0)
+                    else:
+                        init_latents = retrieve_latents(
+                            self.vae.encode(image), generator=generator
+                        )
 
-                init_latents = init_latents.to(dtype)
-                init_latents = self.vae.config.scaling_factor * init_latents
+                    init_latents = init_latents.to(dtype)
+                    init_latents = self.vae.config.scaling_factor * init_latents
+                finally:
+                    if self.vae.config.force_upcast:
+                        self.vae.to(dtype)
 
             if (
                 batch_size > init_latents.shape[0]
@@ -1567,6 +1571,8 @@ def create_pipeline():
             if image is None:
                 image = []
 
+            ip_adapter_masks = None
+
             # make sure only one of the either latents of image_for_noise is passed
             if latents is not None and image_for_noise is not None:
                 raise ValueError(
@@ -1786,7 +1792,6 @@ def create_pipeline():
                         device=device, dtype=prompt_embeds.dtype
                     )
                     mask_tensor = mask_tensor[:, :, 0] / 255.0
-                    print(np.average(mask_tensor.cpu().numpy()))
                     mask_tensor = mask_tensor[None, None]
                     h, w = mask_tensor.shape[-2:]
                     control_mask_list = []
@@ -2051,12 +2056,12 @@ def create_pipeline():
                         if control_image_for_view is not None:
                             if isinstance(control_image_for_view, list):
                                 control_image_for_view = [
-                                    c.to(device=device, dtype=self.vae.dtype)
+                                    c.to(device=device, dtype=self.controlnet.dtype)
                                     for c in control_image_for_view
                                 ]
                             else:
                                 control_image_for_view = control_image_for_view.to(
-                                    device=device, dtype=self.vae.dtype
+                                    device=device, dtype=self.controlnet.dtype
                                 )
 
                         # rematch block's scheduler status
@@ -2353,45 +2358,46 @@ def create_pipeline():
                     self.vae.dtype == torch.float16 and self.vae.config.force_upcast
                 )
 
-                if needs_upcasting:
-                    self.upcast_vae()
-                    latents = latents.to(
-                        next(iter(self.vae.post_quant_conv.parameters())).dtype
-                    )
+                try:
+                    if needs_upcasting:
+                        self.upcast_vae()
+                        latents = latents.to(
+                            next(iter(self.vae.post_quant_conv.parameters())).dtype
+                        )
 
-                # unscale/denormalize the latents
-                # denormalize with the mean and std if available and not None
-                has_latents_mean = (
-                    hasattr(self.vae.config, "latents_mean")
-                    and self.vae.config.latents_mean is not None
-                )
-                has_latents_std = (
-                    hasattr(self.vae.config, "latents_std")
-                    and self.vae.config.latents_std is not None
-                )
-                if has_latents_mean and has_latents_std:
-                    latents_mean = (
-                        torch.tensor(self.vae.config.latents_mean)
-                        .view(1, 4, 1, 1)
-                        .to(latents.device, latents.dtype)
+                    # unscale/denormalize the latents
+                    # denormalize with the mean and std if available and not None
+                    has_latents_mean = (
+                        hasattr(self.vae.config, "latents_mean")
+                        and self.vae.config.latents_mean is not None
                     )
-                    latents_std = (
-                        torch.tensor(self.vae.config.latents_std)
-                        .view(1, 4, 1, 1)
-                        .to(latents.device, latents.dtype)
+                    has_latents_std = (
+                        hasattr(self.vae.config, "latents_std")
+                        and self.vae.config.latents_std is not None
                     )
-                    latents = (
-                        latents * latents_std / self.vae.config.scaling_factor
-                        + latents_mean
-                    )
-                else:
-                    latents = latents / self.vae.config.scaling_factor
+                    if has_latents_mean and has_latents_std:
+                        latents_mean = (
+                            torch.tensor(self.vae.config.latents_mean)
+                            .view(1, 4, 1, 1)
+                            .to(latents.device, latents.dtype)
+                        )
+                        latents_std = (
+                            torch.tensor(self.vae.config.latents_std)
+                            .view(1, 4, 1, 1)
+                            .to(latents.device, latents.dtype)
+                        )
+                        latents = (
+                            latents * latents_std / self.vae.config.scaling_factor
+                            + latents_mean
+                        )
+                    else:
+                        latents = latents / self.vae.config.scaling_factor
 
-                image = self.vae.decode(latents, return_dict=False)[0]
-
-                # cast back to fp16 if needed
-                if needs_upcasting:
-                    self.vae.to(dtype=torch.float16)
+                    image = self.vae.decode(latents, return_dict=False)[0]
+                finally:
+                    # cast back to fp16 if needed
+                    if needs_upcasting:
+                        self.vae.to(dtype=torch.float16)
             else:
                 image = latents
 
@@ -2979,10 +2985,13 @@ def create_pipeline():
                         )
                     image_embeds.append(single_image_embeds)
 
-            ip_adapter_masks = self.ip_adapter_mask_processor.preprocess(
-                ip_adapter_mask, height=height, width=width
-            )
-            ip_adapter_masks = [mask.unsqueeze(0) for mask in ip_adapter_masks]
+            ip_adapter_masks = None
+            if ip_adapter_mask is not None:
+                ip_adapter_masks = self.ip_adapter_mask_processor.preprocess(
+                    ip_adapter_mask, height=height, width=width
+                )
+                ip_adapter_masks = [mask.unsqueeze(0) for mask in ip_adapter_masks]
+
             return image_embeds, ip_adapter_masks
 
         # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.run_safety_checker
@@ -3394,6 +3403,7 @@ def create_pipeline():
             prompt: str | list[str] = None,
             image: PipelineImageInput = None,
             control_mask: PipelineImageInput | None = None,
+            ip_adapter_index: int | list[int] | None = None,
             height: int | None = None,
             width: int | None = None,
             num_inference_steps: int = 50,
@@ -3534,6 +3544,8 @@ def create_pipeline():
 
             if image is None:
                 image = []
+
+            ip_adapter_masks = None
 
             callback = kwargs.pop("callback", None)
             callback_steps = kwargs.pop("callback_steps", None)
@@ -3900,7 +3912,6 @@ def create_pipeline():
                     count.zero_()
                     value.zero_()
                     for j, batch_view in enumerate(views_batch):
-                        print(f"Batch view: {batch_view}")
                         vb_size = len(batch_view)
                         latents_for_view = torch.cat(
                             [
@@ -3946,13 +3957,13 @@ def create_pipeline():
                             if isinstance(control_image_for_view, list):
                                 control_image_for_view = [
                                     control_image.to(
-                                        device=device, dtype=self.vae.dtype
+                                        device=device, dtype=self.controlnet.dtype
                                     )
                                     for control_image in control_image_for_view
                                 ]
                             else:
                                 control_image_for_view = control_image_for_view.to(
-                                    device=device, dtype=image.dtype
+                                    device=device, dtype=controlnet.dtype
                                 )
 
                         # rematch block's scheduler status

@@ -6,7 +6,7 @@ from urllib.request import Request, urlopen
 import fal
 import PIL.Image
 from fal import cached
-from fal.toolkit import Image, ImageSizeInput, get_image_size
+from fal.toolkit import File, Image, ImageSizeInput, get_image_size
 from fal.toolkit.image import ImageSize
 from pydantic import BaseModel, Field, root_validator
 
@@ -282,6 +282,14 @@ class InputParameters(OrderedBaseModel):
         ge=64,
         le=2048,
     )
+    debug_latents: bool = Field(
+        default=False,
+        description="If set to true, the latents will be saved for debugging.",
+    )
+    debug_per_pass_latents: bool = Field(
+        default=False,
+        description="If set to true, the latents will be saved for debugging per pass.",
+    )
 
     @root_validator
     def the_validator(cls, values):
@@ -344,6 +352,12 @@ class OutputParameters(BaseModel):
     has_nsfw_concepts: list[bool] = Field(
         description="Whether the generated images contain NSFW concepts."
     )
+    debug_latents: File | None = Field(
+        description="The latents saved for debugging.",
+    )
+    debug_per_pass_latents: File | None = Field(
+        description="The latents saved for debugging per pass.",
+    )
 
 
 @contextmanager
@@ -364,6 +378,10 @@ def generate_image(input: InputParameters) -> OutputParameters:
     A single API for text-to-image, built on [fal](https://fal.ai) that supports
     all Stable Diffusion variants, checkpoints and LoRAs from HuggingFace (🤗) and CivitAI.
     """
+    import os
+    import shutil
+    import tempfile
+
     import torch
 
     session = load_session()
@@ -448,6 +466,8 @@ def generate_image(input: InputParameters) -> OutputParameters:
             kwargs["tile_window_width"] = input.tile_width
             kwargs["tile_stride_height"] = input.tile_stride_height
             kwargs["tile_stride_width"] = input.tile_stride_width
+            kwargs["debug_latents"] = input.debug_latents
+            kwargs["debug_per_pass_latents"] = input.debug_per_pass_latents
 
             if input.image_url is not None:
                 print("reading noise image", input.image_url)
@@ -507,11 +527,70 @@ def generate_image(input: InputParameters) -> OutputParameters:
 
             images = session.upload_images(filter_by(has_nsfw_concepts, result.images))
 
-            print("images", images)
+            with tempfile.TemporaryDirectory() as temp_dir:
+                debug_latents = None
+                if input.debug_latents:
+                    # get the debug latents from the result
+                    # save them to files and tar them
+                    debug_latents = result.debug_latents
 
-            return OutputParameters(
-                images=images, seed=seed, has_nsfw_concepts=has_nsfw_concepts
-            )
+                    # make an images directory
+                    images_dir = os.path.join(temp_dir, "images")
+                    os.makedirs(images_dir, exist_ok=True)
+                    for i, latent in enumerate(debug_latents):
+                        for batch_index, latent_for_batch in enumerate(latent):
+                            file_path = os.path.join(
+                                images_dir,
+                                f"{str(batch_index).zfill(4)}_{str(i).zfill(4)}.png",
+                            )
+                            latent_for_batch.save(file_path)
+
+                    # create a tar file using shutil
+                    tar_file_path = os.path.join(temp_dir, "debug_latents.tar")
+                    shutil.make_archive(tar_file_path[:-4], "tar", images_dir)
+                    debug_latents = File.from_path(tar_file_path)
+
+                debug_per_pass_latents = None
+                if input.debug_per_pass_latents:
+                    # get the debug latents from the result
+                    # save them to files and tar them
+                    debug_per_pass_latents = result.debug_per_pass_latents
+                    # make an images directory
+                    images_dir = os.path.join(temp_dir, "images")
+                    os.makedirs(images_dir, exist_ok=True)
+                    for pass_index, latent_per_pass in enumerate(
+                        debug_per_pass_latents
+                    ):
+                        for timestep_index, (dims, latents, weights) in enumerate(
+                            latent_per_pass
+                        ):
+
+                            for batch_index, latent_for_batch in enumerate(latents):
+                                file_path = os.path.join(
+                                    images_dir,
+                                    f"{str(batch_index).zfill(4)}_{str(pass_index).zfill(4)}_{str(timestep_index).zfill(4)}_{dims}.png",
+                                )
+                                latent_for_batch.save(file_path)
+
+                            for batch_index, weight_for_batch in enumerate(weights):
+                                file_path = os.path.join(
+                                    images_dir,
+                                    f"weight_{str(batch_index).zfill(4)}_{str(pass_index).zfill(4)}_{str(timestep_index).zfill(4)}_{dims}.png",
+                                )
+                                weight_for_batch.save(file_path)
+
+                    # create a tar file using shutil
+                    tar_file_path = os.path.join(temp_dir, "debug_per_pass_latents.tar")
+                    shutil.make_archive(tar_file_path[:-4], "tar", images_dir)
+                    debug_per_pass_latents = File.from_path(tar_file_path)
+
+                return OutputParameters(
+                    images=images,
+                    seed=seed,
+                    has_nsfw_concepts=has_nsfw_concepts,
+                    debug_latents=debug_latents,
+                    debug_per_pass_latents=debug_per_pass_latents,
+                )
 
 
 class TextToImageInputOverwrites(BaseModel):
@@ -619,13 +698,14 @@ class MegaPipeline(
             ],
             guidance_scale=7.5,
             num_inference_steps=20,
-            num_images=1,
+            num_images=2,
             seed=42,
             scheduler="Euler A",
             image_size=ImageSize(width=1024, height=1024),
         )
 
-        _ = generate_image(initial_input)
+        result = generate_image(initial_input)
+        print(result)
 
         self.ready = True
 

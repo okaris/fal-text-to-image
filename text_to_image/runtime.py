@@ -189,6 +189,7 @@ SUPPORTED_SCHEDULERS = {
     "Euler": ("EulerDiscreteScheduler", {}),
     "Euler A": ("EulerAncestralDiscreteScheduler", {}),
     "LCM": ("LCMScheduler", {}),
+    "DDIM": ("DDIMScheduler", {}),
 }
 
 # Amount of RAM to use as buffer, in percentages.

@@ -1422,6 +1422,8 @@ def create_pipeline():
             tile_window_width: int = 1024,
             tile_stride_height: int = 512,
             tile_stride_width: int = 512,
+            debug_latents: bool = False,
+            debug_per_pass_latents: bool = False,
             **kwargs,
         ):
             r"""
@@ -1992,6 +1994,9 @@ def create_pipeline():
                 latents = latents.to(device=device)
                 value = value.to(device=device)
 
+            debug_latents_list = []
+            debug_per_pass_latents_list = []
+
             is_unet_compiled = is_compiled_module(self.unet)
             is_controlnet_compiled = is_compiled_module(self.controlnet)
             is_torch_higher_equal_2_1 = is_torch_version(">=", "2.1")
@@ -1999,6 +2004,8 @@ def create_pipeline():
                 for i, t in enumerate(timesteps):
                     count.zero_()
                     value.zero_()
+
+                    per_pass_latents = []
 
                     current_prompt_embeds = prompt_embeds
                     # Relevant thread:
@@ -2068,8 +2075,9 @@ def create_pipeline():
                         self.scheduler.__dict__.update(views_scheduler_status[j])
 
                         # expand the latents if we are doing classifier free guidance
+
                         latent_model_input = (
-                            latents_for_view.repeat_interleave(2, dim=0)
+                            torch.cat([latents_for_view] * 2)
                             if self.do_classifier_free_guidance
                             else latents_for_view
                         )
@@ -2302,6 +2310,10 @@ def create_pipeline():
                             w_start,
                             w_end,
                         ) in zip(latents_denoised_batch.chunk(vb_size), batch_view):
+                            latents_view_denoised = latents_view_denoised.to(
+                                device=value.device
+                            )
+                            weights = torch.ones_like(latents_view_denoised)
                             if circular_padding and w_end > latents.shape[3]:
                                 # Case for circular padding
                                 value[
@@ -2314,17 +2326,32 @@ def create_pipeline():
                                 ] += latents_view_denoised[
                                     :, :, h_start:h_end, latents.shape[3] - w_start :
                                 ].cpu()
-                                count[:, :, h_start:h_end, w_start:] += 1
+                                count[:, :, h_start:h_end, w_start:] += weights
                                 count[
                                     :, :, h_start:h_end, : w_end - latents.shape[3]
-                                ] += 1
+                                ] += weights
                             else:
+
                                 value[
                                     :, :, h_start:h_end, w_start:w_end
-                                ] += latents_view_denoised.to(device=value.device)
-                                count[:, :, h_start:h_end, w_start:w_end] += 1
+                                ] += latents_view_denoised
+                                count[:, :, h_start:h_end, w_start:w_end] += weights
+
+                            if debug_per_pass_latents:
+                                per_pass_latents.append(
+                                    (
+                                        (h_start, h_end, w_start, w_end),
+                                        latents_view_denoised.cpu(),
+                                        weights.cpu(),
+                                    )
+                                )
+                    if debug_per_pass_latents:
+                        debug_per_pass_latents_list.append(per_pass_latents)
 
                     latents = torch.where(count > 0, value / count, value)
+
+                    if debug_latents:
+                        debug_latents_list.append(latents.cpu())
 
                     if callback_on_step_end is not None:
                         callback_kwargs = {}
@@ -2390,10 +2417,121 @@ def create_pipeline():
                             latents * latents_std / self.vae.config.scaling_factor
                             + latents_mean
                         )
+
+                        if debug_per_pass_latents:
+                            temp_debug_per_pass_latents_list = []
+                            for per_pass_latents in debug_per_pass_latents_list:
+                                temp_per_pass_latents = []
+                                for per_pass_latent in per_pass_latents:
+                                    the_latents = per_pass_latent[1]
+                                    per_pass_latent[1] = (
+                                        the_latents
+                                        * latents_std
+                                        / self.vae.config.scaling_factor
+                                    )
+                                    +latents_mean
+                                    temp_per_pass_latents.append(per_pass_latent)
+
+                                temp_debug_per_pass_latents_list.append(
+                                    temp_per_pass_latents
+                                )
+                            debug_per_pass_latents_list = (
+                                temp_debug_per_pass_latents_list
+                            )
+
+                        if debug_latents:
+                            temp_debug_latents_list = []
+                            for the_latents in debug_latents_list:
+                                the_latents = (
+                                    the_latents
+                                    * latents_std
+                                    / self.vae.config.scaling_factor
+                                    + latents_mean
+                                )
+                                temp_debug_latents_list.append(the_latents)
+                        debug_latents_list = temp_debug_latents_list
+
                     else:
                         latents = latents / self.vae.config.scaling_factor
 
+                        if debug_per_pass_latents:
+                            temp_debug_per_pass_latents_list = []
+                            for per_pass_latents in debug_per_pass_latents_list:
+                                temp_per_pass_latents = []
+                                for per_pass_latent in per_pass_latents:
+                                    the_per_pass_latent = (
+                                        per_pass_latent[1]
+                                        / self.vae.config.scaling_factor
+                                    )
+                                    temp_per_pass_latents.append(
+                                        (
+                                            per_pass_latent[0],
+                                            the_per_pass_latent,
+                                            per_pass_latent[2],
+                                        )
+                                    )
+
+                                temp_debug_per_pass_latents_list.append(
+                                    temp_per_pass_latents
+                                )
+                            debug_per_pass_latents_list = (
+                                temp_debug_per_pass_latents_list
+                            )
+
+                        if debug_latents:
+                            temp_debug_latents_list = []
+                            for the_latents in debug_latents_list:
+                                the_latents = (
+                                    the_latents / self.vae.config.scaling_factor
+                                )
+                                temp_debug_latents_list.append(the_latents)
+
+                            debug_latents_list = temp_debug_latents_list
+
                     image = self.vae.decode(latents, return_dict=False)[0]
+
+                    if debug_per_pass_latents:
+                        temp_debug_per_pass_latents_list = []
+                        for per_pass_latents in debug_per_pass_latents_list:
+                            temp_per_pass_latents = []
+                            for per_pass_latent in per_pass_latents:
+                                dims = per_pass_latent[0]
+                                the_per_pass_latent = self.vae.decode(
+                                    per_pass_latent[1].to("cuda"), return_dict=False
+                                )[0]
+                                the_per_pass_latent = self.image_processor.postprocess(
+                                    the_per_pass_latent,
+                                    output_type="pil",
+                                )
+
+                                # need to convert the greyscale weight images to images
+                                weight_images = self.image_processor.postprocess(
+                                    per_pass_latent[2],
+                                    output_type="pil",
+                                )
+
+                                temp_per_pass_latents.append(
+                                    (dims, the_per_pass_latent, weight_images)
+                                )
+
+                            temp_debug_per_pass_latents_list.append(
+                                temp_per_pass_latents
+                            )
+                        debug_per_pass_latents_list = temp_debug_per_pass_latents_list
+
+                    if debug_latents:
+                        temp_debug_latents_list = []
+                        for the_latents in debug_latents_list:
+                            # this needs to handle batches
+                            the_latents = self.vae.decode(
+                                the_latents.to("cuda"), return_dict=False
+                            )[0]
+                            the_latents = self.image_processor.postprocess(
+                                the_latents, output_type="pil"
+                            )
+                            temp_debug_latents_list.append(the_latents)
+                        debug_latents_list = temp_debug_latents_list
+
                 finally:
                     # cast back to fp16 if needed
                     if needs_upcasting:
@@ -2412,9 +2550,12 @@ def create_pipeline():
             self.maybe_free_model_hooks()
 
             if not return_dict:
-                return (image,)
+                return (image, debug_latents_list, debug_per_pass_latents_list)
 
-            return StableDiffusionXLPipelineOutput(images=image)
+            result = StableDiffusionXLPipelineOutput(images=image)
+            result.debug_latents = debug_latents_list
+            result.debug_per_pass_latents = debug_per_pass_latents_list
+            return result
 
     class StableDiffusionControlNetPipeline(
         DiffusionPipeline,
@@ -3435,6 +3576,8 @@ def create_pipeline():
             tile_window_width: int = 512,
             tile_stride_height: int = 256,
             tile_stride_width: int = 256,
+            debug_latents: bool = False,
+            debug_per_pass_latents: bool = False,
             **kwargs,
         ):
             r"""
@@ -3888,6 +4031,9 @@ def create_pipeline():
                     keeps[0] if isinstance(controlnet, ControlNetModel) else keeps
                 )
 
+            debug_latents_list = []
+            debug_per_pass_latents_list = []
+
             # 8. Denoising loop
             num_warmup_steps = (
                 len(timesteps) - num_inference_steps * self.scheduler.order
@@ -3911,6 +4057,9 @@ def create_pipeline():
 
                     count.zero_()
                     value.zero_()
+
+                    per_pass_latents = []
+
                     for j, batch_view in enumerate(views_batch):
                         vb_size = len(batch_view)
                         latents_for_view = torch.cat(
@@ -3971,7 +4120,7 @@ def create_pipeline():
 
                         # expand the latents if we are doing classifier free guidance
                         latent_model_input = (
-                            latents_for_view.repeat_interleave(2, dim=0)
+                            torch.cat([latents_for_view] * 2)
                             if self.do_classifier_free_guidance
                             else latents_for_view
                         )
@@ -4128,34 +4277,49 @@ def create_pipeline():
                             w_start,
                             w_end,
                         ) in zip(latents_denoised_batch.chunk(vb_size), batch_view):
+                            latents_view_denoised = latents_view_denoised.to(
+                                device=value.device
+                            )
+                            weights = torch.ones_like(latents_view_denoised)
                             if circular_padding and w_end > latents.shape[3]:
                                 # Case for circular padding
                                 value[
                                     :, :, h_start:h_end, w_start:
                                 ] += latents_view_denoised[
                                     :, :, h_start:h_end, : latents.shape[3] - w_start
-                                ].to(
-                                    value.dtype
-                                )
+                                ].cpu()
                                 value[
                                     :, :, h_start:h_end, : w_end - latents.shape[3]
                                 ] += latents_view_denoised[
                                     :, :, h_start:h_end, latents.shape[3] - w_start :
-                                ].to(
-                                    value.dtype
-                                )
-                                count[:, :, h_start:h_end, w_start:] += 1
+                                ].cpu()
+                                count[:, :, h_start:h_end, w_start:] += weights
                                 count[
                                     :, :, h_start:h_end, : w_end - latents.shape[3]
-                                ] += 1
+                                ] += weights
                             else:
+
                                 value[
                                     :, :, h_start:h_end, w_start:w_end
-                                ] += latents_view_denoised.to(value.dtype)
-                                count[:, :, h_start:h_end, w_start:w_end] += 1
+                                ] += latents_view_denoised
+                                count[:, :, h_start:h_end, w_start:w_end] += weights
+
+                            if debug_per_pass_latents:
+                                per_pass_latents.append(
+                                    (
+                                        (h_start, h_end, w_start, w_end),
+                                        latents_view_denoised.cpu(),
+                                        weights.cpu(),
+                                    )
+                                )
+                    if debug_per_pass_latents:
+                        debug_per_pass_latents_list.append(per_pass_latents)
 
                     # take the MultiDiffusion step. Eq. 5 in MultiDiffusion paper: https://arxiv.org/abs/2302.08113
                     latents = torch.where(count > 0, value / count, value)
+
+                    if debug_latents:
+                        debug_latents_list.append(latents.cpu())
 
                     if callback_on_step_end is not None:
                         callback_kwargs = {}
@@ -4193,6 +4357,50 @@ def create_pipeline():
                 self.controlnet.to("cpu")
                 torch.cuda.empty_cache()
 
+            if debug_per_pass_latents:
+                temp_debug_per_pass_latents_list = []
+                for per_pass_latents in debug_per_pass_latents_list:
+                    temp_per_pass_latents = []
+                    for per_pass_latent in per_pass_latents:
+                        dims = per_pass_latent[0]
+                        the_per_pass_latent = (
+                            per_pass_latent[1] / self.vae.config.scaling_factor
+                        )
+                        the_per_pass_latent = self.vae.decode(
+                            the_per_pass_latent.to("cuda"), return_dict=False
+                        )[0]
+                        the_per_pass_latent = self.image_processor.postprocess(
+                            the_per_pass_latent,
+                            output_type="pil",
+                        )
+
+                        # need to convert the greyscale weight images to images
+                        weight_images = self.image_processor.postprocess(
+                            per_pass_latent[2],
+                            output_type="pil",
+                        )
+
+                        temp_per_pass_latents.append(
+                            (dims, the_per_pass_latent, weight_images)
+                        )
+
+                    temp_debug_per_pass_latents_list.append(temp_per_pass_latents)
+                debug_per_pass_latents_list = temp_debug_per_pass_latents_list
+
+            if debug_latents:
+                temp_debug_latents_list = []
+                for the_latents in debug_latents_list:
+                    the_latents = self.vae.decode(
+                        the_latents.to("cuda"), return_dict=False
+                    )[0]
+                    the_latents = self.image_processor.postprocess(
+                        the_latents,
+                        output_type="pil",
+                    )
+                    temp_debug_latents_list.append(the_latents)
+
+                debug_latents_list = temp_debug_latents_list
+
             if not output_type == "latent":
                 image = self.vae.decode(
                     latents / self.vae.config.scaling_factor,
@@ -4219,10 +4427,20 @@ def create_pipeline():
             self.maybe_free_model_hooks()
 
             if not return_dict:
-                return (image, has_nsfw_concept)
+                return (
+                    image,
+                    has_nsfw_concept,
+                    debug_latents_list,
+                    debug_per_pass_latents_list,
+                )
 
-            return StableDiffusionPipelineOutput(
+            result = StableDiffusionPipelineOutput(
                 images=image, nsfw_content_detected=has_nsfw_concept
             )
+
+            result.debug_latents = debug_latents_list
+            result.debug_per_pass_latents = debug_per_pass_latents_list
+
+            return result
 
     return StableDiffusionControlNetPipeline, StableDiffusionXLControlNetPipeline

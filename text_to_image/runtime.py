@@ -112,6 +112,7 @@ class IPAdapter(BaseModel):
         le=1.0,
     )
 
+
 class ControlNet(BaseModel):
     path: str = Field(
         description="URL or the path to the control net weights.",

@@ -785,7 +785,7 @@ def create_pipeline():
             device,
             num_images_per_prompt,
             do_classifier_free_guidance,
-            unconditional_noising_factors=None
+            unconditional_noising_factors=None,
         ):
             if ip_adapter_image_embeds is None:
                 if not isinstance(ip_adapter_image, list):
@@ -805,14 +805,20 @@ def create_pipeline():
                 else:
                     if not isinstance(unconditional_noising_factors, list):
                         unconditional_noising_factors = [unconditional_noising_factors]
-                    
+
                     if len(unconditional_noising_factors) != len(ip_adapter_image):
                         raise ValueError(
                             f"`unconditional_noising_factors` must have same length as the number of IP Adapters. Got {len(unconditional_noising_factors)} values and {len(ip_adapter_image)} IP Adapters."
                         )
 
-                for single_ip_adapter_image, unconditional_noising_factor, image_proj_layer in zip(
-                    ip_adapter_image, unconditional_noising_factors, self.unet.encoder_hid_proj.image_projection_layers
+                for (
+                    single_ip_adapter_image,
+                    unconditional_noising_factor,
+                    image_proj_layer,
+                ) in zip(
+                    ip_adapter_image,
+                    unconditional_noising_factors,
+                    self.unet.encoder_hid_proj.image_projection_layers,
                 ):
                     output_hidden_state = not isinstance(
                         image_proj_layer, ImageProjection
@@ -821,7 +827,11 @@ def create_pipeline():
                         single_image_embeds,
                         single_negative_image_embeds,
                     ) = self.encode_image(
-                        single_ip_adapter_image, device, 1, output_hidden_state, unconditional_noising_factor
+                        single_ip_adapter_image,
+                        device,
+                        1,
+                        output_hidden_state,
+                        unconditional_noising_factor,
                     )
                     single_image_embeds = torch.stack(
                         [single_image_embeds] * num_images_per_prompt, dim=0
@@ -1795,7 +1805,7 @@ def create_pipeline():
                     device,
                     batch_size * num_images_per_prompt,
                     self.do_classifier_free_guidance,
-                    ip_adapter_unconditional_noising_factor
+                    ip_adapter_unconditional_noising_factor,
                 )
             if isinstance(ip_adapter_index, int):
                 ip_adapter_index = [ip_adapter_index]
@@ -3158,7 +3168,7 @@ def create_pipeline():
             device,
             num_images_per_prompt,
             do_classifier_free_guidance,
-            unconditional_noising_factors=None
+            unconditional_noising_factors=None,
         ):
             if ip_adapter_image_embeds is None:
                 if not isinstance(ip_adapter_image, list):
@@ -3178,14 +3188,20 @@ def create_pipeline():
                 else:
                     if not isinstance(unconditional_noising_factors, list):
                         unconditional_noising_factors = [unconditional_noising_factors]
-                    
+
                     if len(unconditional_noising_factors) != len(ip_adapter_image):
                         raise ValueError(
                             f"`unconditional_noising_factors` must have same length as the number of IP Adapters. Got {len(unconditional_noising_factors)} values and {len(ip_adapter_image)} IP Adapters."
                         )
 
-                for single_ip_adapter_image, unconditional_noising_factor, image_proj_layer in zip(
-                    ip_adapter_image, unconditional_noising_factors, self.unet.encoder_hid_proj.image_projection_layers
+                for (
+                    single_ip_adapter_image,
+                    unconditional_noising_factor,
+                    image_proj_layer,
+                ) in zip(
+                    ip_adapter_image,
+                    unconditional_noising_factors,
+                    self.unet.encoder_hid_proj.image_projection_layers,
                 ):
                     output_hidden_state = not isinstance(
                         image_proj_layer, ImageProjection
@@ -3194,7 +3210,11 @@ def create_pipeline():
                         single_image_embeds,
                         single_negative_image_embeds,
                     ) = self.encode_image(
-                        single_ip_adapter_image, device, 1, output_hidden_state, unconditional_noising_factor
+                        single_ip_adapter_image,
+                        device,
+                        1,
+                        output_hidden_state,
+                        unconditional_noising_factor,
                     )
                     single_image_embeds = torch.stack(
                         [single_image_embeds] * num_images_per_prompt, dim=0
@@ -3955,7 +3975,7 @@ def create_pipeline():
                     device,
                     batch_size * num_images_per_prompt,
                     self.do_classifier_free_guidance,
-                    ip_adapter_unconditional_noising_factor
+                    ip_adapter_unconditional_noising_factor,
                 )
 
             if isinstance(ip_adapter_index, int):

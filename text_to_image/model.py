@@ -491,7 +491,9 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 if ip_adapter_image_url is not None:
                     if not isinstance(ip_adapter_image_url, list):
                         ip_adapter_image_url = [ip_adapter_image_url]
-                    ip_adapter_uncond_noise_factors.append(ip_adapter.unconditional_noising_factor)
+                    ip_adapter_uncond_noise_factors.append(
+                        ip_adapter.unconditional_noising_factor
+                    )
                     ip_adapter_face_image = None
                     if ip_adapter.insight_face_model_path is not None:
 
@@ -549,7 +551,9 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 kwargs["ip_adapter_mask"] = ip_adapter_masks
 
             if len(ip_adapter_uncond_noise_factors) > 0:
-                kwargs["ip_adapter_unconditional_noising_factor"] = ip_adapter_uncond_noise_factors
+                kwargs[
+                    "ip_adapter_unconditional_noising_factor"
+                ] = ip_adapter_uncond_noise_factors
 
             print(f"Generating {input.num_images} images...")
             make_inference = partial(pipe, **kwargs)

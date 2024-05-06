@@ -538,7 +538,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
                         else:
                             raise ValueError(
                                 "The image for the IP Adapter must be a PIL Image."
-                            )                        
+                            )
 
             if len(ip_adapter_images) > 0:
                 kwargs["ip_adapter_image"] = ip_adapter_images

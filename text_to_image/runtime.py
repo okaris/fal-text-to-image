@@ -232,6 +232,7 @@ def patch_onnx_runtime(
     omp_num_threads: int = 16,
 ):
     import os
+
     import onnxruntime as ort
 
     os.environ["OMP_NUM_THREADS"] = str(omp_num_threads)
@@ -244,6 +245,7 @@ def patch_onnx_runtime(
         return _default_session_options
 
     ort.capi._pybind_state.get_default_session_options = get_default_session_options_new
+
 
 @dataclass
 class GlobalRuntime:

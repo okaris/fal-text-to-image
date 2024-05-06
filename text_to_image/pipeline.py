@@ -702,7 +702,6 @@ def create_pipeline():
             device,
             num_images_per_prompt,
             output_hidden_states=None,
-            seed=42,
             unconditional_noising_factor=0.5,
         ):
             dtype = next(self.image_encoder.parameters()).dtype
@@ -712,7 +711,6 @@ def create_pipeline():
                 image = self.feature_extractor(image, return_tensors="pt").pixel_values
 
             image = image.to(device=device, dtype=dtype)
-            torch.manual_seed(seed)
             additional_noise_for_uncond = (
                 torch.rand_like(image) * unconditional_noising_factor
             )
@@ -787,7 +785,6 @@ def create_pipeline():
             device,
             num_images_per_prompt,
             do_classifier_free_guidance,
-            seed,
         ):
             if ip_adapter_image_embeds is None:
                 if not isinstance(ip_adapter_image, list):
@@ -811,7 +808,7 @@ def create_pipeline():
                         single_image_embeds,
                         single_negative_image_embeds,
                     ) = self.encode_image(
-                        single_ip_adapter_image, device, 1, output_hidden_state, seed
+                        single_ip_adapter_image, device, 1, output_hidden_state
                     )
                     single_image_embeds = torch.stack(
                         [single_image_embeds] * num_images_per_prompt, dim=0
@@ -1449,7 +1446,6 @@ def create_pipeline():
             num_images_per_prompt: int | None = 1,
             eta: float = 0.0,
             generator: torch.Generator | list[torch.Generator] | None = None,
-            seed: int | None = 42,
             latents: torch.FloatTensor | None = None,
             image_for_noise: PipelineImageInput | None = None,
             strength: float = 1.0,
@@ -1785,7 +1781,6 @@ def create_pipeline():
                     device,
                     batch_size * num_images_per_prompt,
                     self.do_classifier_free_guidance,
-                    seed,
                 )
             if isinstance(ip_adapter_index, int):
                 ip_adapter_index = [ip_adapter_index]
@@ -3071,7 +3066,6 @@ def create_pipeline():
             device,
             num_images_per_prompt,
             output_hidden_states=None,
-            seed=42,
             unconditional_noising_factor=0.5,
         ):
             dtype = next(self.image_encoder.parameters()).dtype
@@ -3082,7 +3076,6 @@ def create_pipeline():
 
             image = image.to(device=device, dtype=dtype)
 
-            torch.manual_seed(seed)
             additional_noise_for_uncond = (
                 torch.rand_like(image) * unconditional_noising_factor
             )
@@ -3150,7 +3143,6 @@ def create_pipeline():
             device,
             num_images_per_prompt,
             do_classifier_free_guidance,
-            seed,
         ):
             if ip_adapter_image_embeds is None:
                 if not isinstance(ip_adapter_image, list):
@@ -3174,7 +3166,7 @@ def create_pipeline():
                         single_image_embeds,
                         single_negative_image_embeds,
                     ) = self.encode_image(
-                        single_ip_adapter_image, device, 1, output_hidden_state, seed
+                        single_ip_adapter_image, device, 1, output_hidden_state
                     )
                     single_image_embeds = torch.stack(
                         [single_image_embeds] * num_images_per_prompt, dim=0
@@ -3662,7 +3654,6 @@ def create_pipeline():
             strength: float = 0.0,
             eta: float = 0.0,
             generator: torch.Generator | list[torch.Generator] | None = None,
-            seed: int | None = 42,
             latents: torch.FloatTensor | None = None,
             prompt_embeds: torch.FloatTensor | None = None,
             negative_prompt_embeds: torch.FloatTensor | None = None,
@@ -3935,7 +3926,6 @@ def create_pipeline():
                     device,
                     batch_size * num_images_per_prompt,
                     self.do_classifier_free_guidance,
-                    seed,
                 )
 
             if isinstance(ip_adapter_index, int):

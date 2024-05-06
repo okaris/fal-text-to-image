@@ -697,24 +697,47 @@ def create_pipeline():
 
         # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.encode_image
         def encode_image(
-            self, image, device, num_images_per_prompt, output_hidden_states=None
+            self,
+            image,
+            device,
+            num_images_per_prompt,
+            output_hidden_states=None,
+            seed=42,
+            unconditional_noising_factor=0.5,
         ):
             dtype = next(self.image_encoder.parameters()).dtype
 
-            if not isinstance(image, torch.Tensor):
+            needs_encoding = not isinstance(image, torch.Tensor)
+            if needs_encoding:
                 image = self.feature_extractor(image, return_tensors="pt").pixel_values
 
             image = image.to(device=device, dtype=dtype)
+            torch.manual_seed(seed)
+            additional_noise_for_uncond = (
+                torch.rand_like(image) * unconditional_noising_factor
+            )
+
             if output_hidden_states:
-                image_enc_hidden_states = self.image_encoder(
-                    image, output_hidden_states=True
-                ).hidden_states[-2]
+                if needs_encoding:
+                    image_encoded = self.image_encoder(image, output_hidden_states=True)
+                    image_enc_hidden_states = image_encoded.hidden_states[-2]
+                else:
+                    image_enc_hidden_states = image.unsqueeze(0).unsqueeze(0)
                 image_enc_hidden_states = image_enc_hidden_states.repeat_interleave(
                     num_images_per_prompt, dim=0
                 )
-                uncond_image_enc_hidden_states = self.image_encoder(
-                    torch.zeros_like(image), output_hidden_states=True
-                ).hidden_states[-2]
+
+                if needs_encoding:
+                    uncond_image_encoded = self.image_encoder(
+                        additional_noise_for_uncond, output_hidden_states=True
+                    )
+                    uncond_image_enc_hidden_states = uncond_image_encoded.hidden_states[
+                        -2
+                    ]
+                else:
+                    uncond_image_enc_hidden_states = (
+                        additional_noise_for_uncond.unsqueeze(0).unsqueeze(0)
+                    )
                 uncond_image_enc_hidden_states = (
                     uncond_image_enc_hidden_states.repeat_interleave(
                         num_images_per_prompt, dim=0
@@ -722,11 +745,34 @@ def create_pipeline():
                 )
                 return image_enc_hidden_states, uncond_image_enc_hidden_states
             else:
-                image_embeds = self.image_encoder(image).image_embeds
+                if needs_encoding:
+                    image_encoded = self.image_encoder(image)
+                    image_embeds = image_encoded.image_embeds
+                else:
+                    image_embeds = image.unsqueeze(0).unsqueeze(0)
+                if needs_encoding:
+                    uncond_image_encoded = self.image_encoder(
+                        additional_noise_for_uncond
+                    )
+                    uncond_image_embeds = uncond_image_encoded.image_embeds
+                else:
+                    uncond_image_embeds = additional_noise_for_uncond.unsqueeze(
+                        0
+                    ).unsqueeze(0)
+
                 image_embeds = image_embeds.repeat_interleave(
                     num_images_per_prompt, dim=0
                 )
-                uncond_image_embeds = torch.zeros_like(image_embeds)
+                uncond_image_embeds = uncond_image_embeds.repeat_interleave(
+                    num_images_per_prompt, dim=0
+                )
+
+                image_embeds = image_embeds.repeat_interleave(
+                    num_images_per_prompt, dim=0
+                )
+                uncond_image_embeds = uncond_image_embeds.repeat_interleave(
+                    num_images_per_prompt, dim=0
+                )
 
                 return image_embeds, uncond_image_embeds
 
@@ -741,6 +787,7 @@ def create_pipeline():
             device,
             num_images_per_prompt,
             do_classifier_free_guidance,
+            seed,
         ):
             if ip_adapter_image_embeds is None:
                 if not isinstance(ip_adapter_image, list):
@@ -764,7 +811,7 @@ def create_pipeline():
                         single_image_embeds,
                         single_negative_image_embeds,
                     ) = self.encode_image(
-                        single_ip_adapter_image, device, 1, output_hidden_state
+                        single_ip_adapter_image, device, 1, output_hidden_state, seed
                     )
                     single_image_embeds = torch.stack(
                         [single_image_embeds] * num_images_per_prompt, dim=0
@@ -818,6 +865,16 @@ def create_pipeline():
                     ip_adapter_mask, height=height, width=width
                 )
                 ip_adapter_masks = [mask.unsqueeze(0) for mask in ip_adapter_masks]
+
+                reshaped_ip_adapter_masks = []
+                for ip_img, mask in zip(image_embeds, ip_adapter_masks):
+                    if isinstance(ip_img, list):
+                        num_images = len(ip_img)
+                        mask = mask.repeat(1, num_images, 1, 1)
+
+                    reshaped_ip_adapter_masks.append(mask)
+
+                ip_adapter_masks = reshaped_ip_adapter_masks
 
             return image_embeds, ip_adapter_masks
 
@@ -1392,6 +1449,7 @@ def create_pipeline():
             num_images_per_prompt: int | None = 1,
             eta: float = 0.0,
             generator: torch.Generator | list[torch.Generator] | None = None,
+            seed: int | None = 42,
             latents: torch.FloatTensor | None = None,
             image_for_noise: PipelineImageInput | None = None,
             strength: float = 1.0,
@@ -1727,6 +1785,7 @@ def create_pipeline():
                     device,
                     batch_size * num_images_per_prompt,
                     self.do_classifier_free_guidance,
+                    seed,
                 )
             if isinstance(ip_adapter_index, int):
                 ip_adapter_index = [ip_adapter_index]
@@ -2140,9 +2199,7 @@ def create_pipeline():
                                         current_prompt_embeds.chunk(2)[1]
                                     )
                                     controlnet_added_cond_kwargs = {
-                                        "text_embeds": current_add_text_embeds.chunk(2)[
-                                            1
-                                        ],
+                                        "text_embeds": add_text_embeds.chunk(2)[1],
                                         "time_ids": add_time_ids.chunk(2)[1],
                                     }
                                 else:
@@ -2183,9 +2240,7 @@ def create_pipeline():
                                 down_block_res_samples = None
                                 mid_block_res_sample = None
 
-                                for controlnet_index in range(
-                                    len(self.controlnet.nets)
-                                ):
+                                for controlnet_index, _ in enumerate(controlnet.nets):
                                     ipa_index = ip_adapter_index[controlnet_index]
                                     if ipa_index is not None:
                                         control_prompt_embeds = ip_adapter_image_embeds[
@@ -3011,24 +3066,48 @@ def create_pipeline():
 
         # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.encode_image
         def encode_image(
-            self, image, device, num_images_per_prompt, output_hidden_states=None
+            self,
+            image,
+            device,
+            num_images_per_prompt,
+            output_hidden_states=None,
+            seed=42,
+            unconditional_noising_factor=0.5,
         ):
             dtype = next(self.image_encoder.parameters()).dtype
 
-            if not isinstance(image, torch.Tensor):
+            needs_encoding = not isinstance(image, torch.Tensor)
+            if needs_encoding:
                 image = self.feature_extractor(image, return_tensors="pt").pixel_values
 
             image = image.to(device=device, dtype=dtype)
+
+            torch.manual_seed(seed)
+            additional_noise_for_uncond = (
+                torch.rand_like(image) * unconditional_noising_factor
+            )
+
             if output_hidden_states:
-                image_enc_hidden_states = self.image_encoder(
-                    image, output_hidden_states=True
-                ).hidden_states[-2]
+                if needs_encoding:
+                    image_encoded = self.image_encoder(image, output_hidden_states=True)
+                    image_enc_hidden_states = image_encoded.hidden_states[-2]
+                else:
+                    image_enc_hidden_states = image.unsqueeze(0).unsqueeze(0)
                 image_enc_hidden_states = image_enc_hidden_states.repeat_interleave(
                     num_images_per_prompt, dim=0
                 )
-                uncond_image_enc_hidden_states = self.image_encoder(
-                    torch.zeros_like(image), output_hidden_states=True
-                ).hidden_states[-2]
+
+                if needs_encoding:
+                    uncond_image_encoded = self.image_encoder(
+                        additional_noise_for_uncond, output_hidden_states=True
+                    )
+                    uncond_image_enc_hidden_states = uncond_image_encoded.hidden_states[
+                        -2
+                    ]
+                else:
+                    uncond_image_enc_hidden_states = (
+                        additional_noise_for_uncond.unsqueeze(0).unsqueeze(0)
+                    )
                 uncond_image_enc_hidden_states = (
                     uncond_image_enc_hidden_states.repeat_interleave(
                         num_images_per_prompt, dim=0
@@ -3036,11 +3115,27 @@ def create_pipeline():
                 )
                 return image_enc_hidden_states, uncond_image_enc_hidden_states
             else:
-                image_embeds = self.image_encoder(image).image_embeds
+                if needs_encoding:
+                    image_encoded = self.image_encoder(image)
+                    image_embeds = image_encoded.image_embeds
+                else:
+                    image_embeds = image.unsqueeze(0).unsqueeze(0)
+                if needs_encoding:
+                    uncond_image_encoded = self.image_encoder(
+                        additional_noise_for_uncond
+                    )
+                    uncond_image_embeds = uncond_image_encoded.image_embeds
+                else:
+                    uncond_image_embeds = additional_noise_for_uncond.unsqueeze(
+                        0
+                    ).unsqueeze(0)
+
                 image_embeds = image_embeds.repeat_interleave(
                     num_images_per_prompt, dim=0
                 )
-                uncond_image_embeds = torch.zeros_like(image_embeds)
+                uncond_image_embeds = uncond_image_embeds.repeat_interleave(
+                    num_images_per_prompt, dim=0
+                )
 
                 return image_embeds, uncond_image_embeds
 
@@ -3055,6 +3150,7 @@ def create_pipeline():
             device,
             num_images_per_prompt,
             do_classifier_free_guidance,
+            seed,
         ):
             if ip_adapter_image_embeds is None:
                 if not isinstance(ip_adapter_image, list):
@@ -3078,7 +3174,7 @@ def create_pipeline():
                         single_image_embeds,
                         single_negative_image_embeds,
                     ) = self.encode_image(
-                        single_ip_adapter_image, device, 1, output_hidden_state
+                        single_ip_adapter_image, device, 1, output_hidden_state, seed
                     )
                     single_image_embeds = torch.stack(
                         [single_image_embeds] * num_images_per_prompt, dim=0
@@ -3132,6 +3228,16 @@ def create_pipeline():
                     ip_adapter_mask, height=height, width=width
                 )
                 ip_adapter_masks = [mask.unsqueeze(0) for mask in ip_adapter_masks]
+
+                reshaped_ip_adapter_masks = []
+                for ip_img, mask in zip(image_embeds, ip_adapter_masks):
+                    if isinstance(ip_img, list):
+                        num_images = len(ip_img)
+                        mask = mask.repeat(1, num_images, 1, 1)
+
+                    reshaped_ip_adapter_masks.append(mask)
+
+                ip_adapter_masks = reshaped_ip_adapter_masks
 
             return image_embeds, ip_adapter_masks
 
@@ -3556,6 +3662,7 @@ def create_pipeline():
             strength: float = 0.0,
             eta: float = 0.0,
             generator: torch.Generator | list[torch.Generator] | None = None,
+            seed: int | None = 42,
             latents: torch.FloatTensor | None = None,
             prompt_embeds: torch.FloatTensor | None = None,
             negative_prompt_embeds: torch.FloatTensor | None = None,
@@ -3828,6 +3935,7 @@ def create_pipeline():
                     device,
                     batch_size * num_images_per_prompt,
                     self.do_classifier_free_guidance,
+                    seed,
                 )
 
             if isinstance(ip_adapter_index, int):

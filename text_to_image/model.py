@@ -7,6 +7,7 @@ import fal
 import PIL.Image
 from fal import cached
 from fal.toolkit import File, Image, ImageSizeInput, get_image_size
+from fal.toolkit.image import ImageSize
 from pydantic import BaseModel, Field, root_validator
 
 from text_to_image.runtime import (
@@ -381,6 +382,8 @@ def generate_image(input: InputParameters) -> OutputParameters:
     import shutil
     import tempfile
 
+    import cv2
+    import numpy as np
     import torch
 
     session = load_session()
@@ -413,6 +416,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 "num_inference_steps": input.num_inference_steps,
                 "guidance_scale": input.guidance_scale,
                 "generator": torch.Generator("cuda").manual_seed(seed),
+                "seed": seed,
             }
 
             if image_size is not None and input.image_url is None:
@@ -473,7 +477,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 kwargs["image_for_noise"] = read_image_from_url(input.image_url)
                 kwargs["strength"] = input.noise_strength
 
-            ip_adapter_images = []
+            ip_adapter_images: list[PIL.Image.Image | torch.Tensor] = []
             ip_adapter_masks = []
 
             # if any ip adapter has a mask we need to make an empty one
@@ -484,28 +488,59 @@ def generate_image(input: InputParameters) -> OutputParameters:
 
             for i, ip_adapter in enumerate(input.ip_adapter):
                 ip_adapter = input.ip_adapter[i]
-                if ip_adapter.ip_adapter_image_url is not None:
-                    if isinstance(ip_adapter.ip_adapter_image_url, list):
-                        ip_adapter_images.append(
-                            [
-                                read_image_from_url(url)
-                                for url in ip_adapter.ip_adapter_image_url
-                            ]
+                ip_adapter_image_url = ip_adapter.ip_adapter_image_url
+                if ip_adapter_image_url is not None:
+                    if not isinstance(ip_adapter_image_url, list):
+                        ip_adapter_image_url = [ip_adapter_image_url]
+                    ip_adapter_face_image = None
+                    if ip_adapter.insight_face_model_path is not None:
+
+                        # We only support a single image for identity extraction for now
+                        if len(ip_adapter_image_url) > 1:
+                            raise ValueError(
+                                "Only a single image is supported for identity extraction."
+                            )
+                        image = read_image_from_url(ip_adapter_image_url[0])
+                        ip_adapter_face_image = image
+                        image = cv2.cvtColor(np.asarray(image), cv2.COLOR_BGR2RGB)
+                        faces = pipe.face_analysis.get(image)
+                        largest_face = sorted(
+                            faces,
+                            key=lambda x: x["bbox"][2] * x["bbox"][3],
+                            reverse=True,
+                        )[0]
+                        face_embedding = torch.tensor(largest_face["embedding"]).to(
+                            "cuda"
                         )
+                        ip_adapter_images.append(face_embedding)
                     else:
                         ip_adapter_images.append(
-                            read_image_from_url(ip_adapter.ip_adapter_image_url)
+                            [read_image_from_url(url) for url in ip_adapter_image_url]
                         )
 
                     if ip_adapter.ip_adapter_mask_url is not None:
                         print("reading mask image", ip_adapter.ip_adapter_mask_url)
                         ip_adapter_masks.append(
-                            read_image_from_url(ip_adapter.ip_adapter_mask_url)
+                            [read_image_from_url(ip_adapter.ip_adapter_mask_url)]
                         )
                     elif any_ip_adapter_has_mask:
                         ip_adapter_masks.append(
                             create_empty_mask_for_image(ip_adapter_images[-1])
                         )
+                    else:
+                        current_image = (
+                            ip_adapter_images[-1][0]
+                            if ip_adapter_face_image is None
+                            else ip_adapter_face_image
+                        )
+                        if isinstance(current_image, PIL.Image.Image):
+                            ip_adapter_masks.append(
+                                create_empty_mask_for_image(current_image)
+                            )
+                        else:
+                            raise ValueError(
+                                "The image for the IP Adapter must be a PIL Image."
+                            )
 
             if len(ip_adapter_images) > 0:
                 kwargs["ip_adapter_image"] = ip_adapter_images
@@ -637,12 +672,75 @@ class MegaPipeline(
         "psutil",
         "peft",
         "huggingface-hub==0.20.2",
+        "git+https://github.com/badayvedat/insightface.git@1ffa3405eedcfe4193c3113affcbfc294d0e684f#subdirectory=python-package",
+        "opencv-python",
+        "numpy",
+        "onnxruntime-gpu",
     ]
 
     def setup(self) -> None:
         initial_input = InputParameters(
-            model_name=f"stabilityai/stable-diffusion-xl-base-1.0",
-            prompt="Self-portrait oil painting, a beautiful cyborg with golden hair, 8k",
+            model_name="frankjoshua/albedobaseXL_v13",
+            prompt="A person",
+            negative_prompt="blurry, out of focus",
+            image_url="https://github.com/okaris/omni-zero/assets/1448702/b97d2b29-d35b-4e73-8d86-e3cbe9953e8c",
+            noise_strength=0.85,
+            controlnets=[
+                ControlNet(
+                    path="okaris/face-controlnet-xl",
+                    image_url="https://github.com/okaris/omni-zero/assets/1448702/da96c849-5e75-4b23-9d5a-a44311509626",
+                    conditioning_scale=1.0,
+                    start_percentage=0.0,
+                    end_percentage=1.0,
+                    ip_adapter_index=0,
+                ),
+                ControlNet(
+                    path="okaris/zoe-depth-controlnet-xl",
+                    image_url="https://github.com/okaris/omni-zero/assets/1448702/977b7ab0-8b88-430d-8b7c-a415d47fd1c0",
+                    conditioning_scale=0.5,
+                    start_percentage=0.0,
+                    end_percentage=1.0,
+                ),
+            ],
+            image_encoder_path="h94/IP-Adapter",
+            image_encoder_subfolder="models/image_encoder",
+            ip_adapter=[
+                IPAdapter(
+                    ip_adapter_image_url="https://github.com/okaris/omni-zero/assets/1448702/ba193a3a-f90e-4461-848a-560454531c58",
+                    path="okaris/ip-adapter-instantid",
+                    model_subfolder=None,
+                    weight_name="ip-adapter-instantid.bin",
+                    insight_face_model_path="okaris/antelopev2",
+                    scale=1.0,
+                ),
+                IPAdapter(
+                    ip_adapter_image_url="https://github.com/okaris/omni-zero/assets/1448702/64dc150b-f683-41b1-be23-b6a52c771584",
+                    path="h94/IP-Adapter",
+                    model_subfolder="sdxl_models",
+                    weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
+                    scale_json={
+                        "down": {"block_2": [0.0, 0.0]},  # Composition
+                        "up": {"block_0": [0.0, 1.0, 0.0]},  # Style
+                    },
+                ),
+                IPAdapter(
+                    ip_adapter_image_url="https://github.com/okaris/omni-zero/assets/1448702/b97d2b29-d35b-4e73-8d86-e3cbe9953e8c",
+                    path="h94/IP-Adapter",
+                    model_subfolder="sdxl_models",
+                    weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
+                    scale_json={
+                        "down": {"block_2": [0.0, 1.0]},  # Composition
+                        "up": {"block_0": [0.0, 0.0, 0.0]},  # Style
+                    },
+                ),
+            ],
+            guidance_scale=3.5,
+            num_inference_steps=20,
+            num_images=1,
+            seed=42,
+            model_architecture="sdxl",
+            scheduler="DPM++ 2M SDE Karras",
+            image_size=ImageSize(width=1024, height=1024),
         )
 
         result = generate_image(initial_input)

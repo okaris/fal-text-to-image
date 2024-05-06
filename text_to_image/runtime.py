@@ -85,6 +85,12 @@ class IPAdapter(BaseModel):
             "ip-adapter-plus_sdxl_vit-h.safetensors",
         ],
     )
+    insight_face_model_path: str | None = Field(
+        description="URL or the path to the InsightFace model weights.",
+        examples=[
+            "h94/IP-Adapter",
+        ],
+    )
     scale: float = Field(
         default=1.0,
         description="""
@@ -158,6 +164,9 @@ def download_or_hf_key(path: str) -> str:
         return str(download_model_weights(path))
     return path
 
+
+INSIGHTFACE_MODEL_CACHE_PATH = Path("/data")
+INSIGHTFACE_MODEL_DOWNLOAD_PATH = "/data/models"
 
 DeviceType = Literal["cpu", "cuda"]
 
@@ -324,6 +333,7 @@ class GlobalRuntime:
             "weight_name": weight_name,
             "scale": scales,
             "subfolder": ["./"] * len(directory),
+            "image_encoder_folder": None,
         }
 
         # `load_ip_adapter` loads it to the pipeline's device
@@ -344,6 +354,7 @@ class GlobalRuntime:
     ) -> Iterator[None]:
         import torch
         from huggingface_hub import snapshot_download
+        from insightface.app import FaceAnalysis
         from transformers import CLIPVisionModelWithProjection
 
         if not ip_adapters or len(ip_adapters) == 0:
@@ -432,11 +443,62 @@ class GlobalRuntime:
                     detail=f"Failed to download IP adapter: {e}",
                 )
 
+            # try to download the insightface model if specified
+
+            insightface_model_name = None
+            try:
+                if ip_adapter.insight_face_model_path:
+                    # check if it is a url
+                    if ip_adapter.insight_face_model_path.startswith("https://"):
+                        print("Assuming insightface model path is a URL")
+                        insightface_path = download_model_weights(
+                            ip_adapter.insight_face_model_path,
+                        )
+                        insightface_model_dir = Path(insightface_path).parent
+                        insightface_model_name = Path(insightface_path).name
+                    elif ip_adapter.insight_face_model_path.startswith("http://"):
+                        # raise an error if the path is an http link
+                        raise HTTPException(
+                            422,
+                            detail="HTTP links are not supported for insightface model weights. Please use HTTPS links or local paths.",
+                        )
+                    # see if there is a single forward slash in the path
+                    elif ip_adapter.insight_face_model_path.count("/") == 1:
+                        insightface_model_name = (
+                            ip_adapter.insight_face_model_path.split("/")[-1]
+                        )
+                        insightface_download_dir = f"{INSIGHTFACE_MODEL_DOWNLOAD_PATH}/{insightface_model_name}"
+                        snapshot_download(
+                            ip_adapter.insight_face_model_path,
+                            local_dir=insightface_download_dir,
+                        )
+
+                        insightface_model_dir = INSIGHTFACE_MODEL_CACHE_PATH
+                    else:
+                        # assume it is a model name
+                        insightface_model_name = ip_adapter.insight_face_model_path
+                        insightface_model_dir = INSIGHTFACE_MODEL_CACHE_PATH
+
+            except Exception as e:
+                raise HTTPException(
+                    422,
+                    detail=f"Failed to download insightface model: {e}",
+                )
+
+            if insightface_model_name:
+                app = FaceAnalysis(
+                    name=insightface_model_name,
+                    root=insightface_model_dir,
+                    providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+                )
+                app.prepare(ctx_id=0, det_size=(640, 640))
+                pipe.face_analysis = app
+
             ip_adapter_scale: float | dict | None = None
-            if ip_adapter.scale:
-                ip_adapter_scale = ip_adapter.scale
-            elif ip_adapter.scale_json:
+            if ip_adapter.scale_json is not None:
                 ip_adapter_scale = ip_adapter.scale_json
+            elif ip_adapter.scale:
+                ip_adapter_scale = ip_adapter.scale
             else:
                 raise HTTPException(
                     422,
@@ -450,8 +512,8 @@ class GlobalRuntime:
             ip_adapter_local_names.append(ip_adapter_local_name)
             ip_adapter_scales.append(ip_adapter_scale)
 
-            image_encoder_local_folders.append(image_encoder_local_folder)
-            image_encoder_local_names.append(image_encoder_local_name)
+        image_encoder_local_folders.append(image_encoder_local_folder)
+        image_encoder_local_names.append(image_encoder_local_name)
 
         ip_adapter_data = [
             ip_adapter_local_folders,

@@ -226,6 +226,25 @@ class Model:
         return self.pipeline.device.type
 
 
+def patch_onnx_runtime(
+    inter_op_num_threads: int = 16,
+    intra_op_num_threads: int = 16,
+    omp_num_threads: int = 16,
+):
+    import os
+    import onnxruntime as ort
+
+    os.environ["OMP_NUM_THREADS"] = str(omp_num_threads)
+
+    _default_session_options = ort.capi._pybind_state.get_default_session_options()
+
+    def get_default_session_options_new():
+        _default_session_options.inter_op_num_threads = inter_op_num_threads
+        _default_session_options.intra_op_num_threads = intra_op_num_threads
+        return _default_session_options
+
+    ort.capi._pybind_state.get_default_session_options = get_default_session_options_new
+
 @dataclass
 class GlobalRuntime:
     models: dict[tuple[str, ...], Model] = field(default_factory=dict)
@@ -238,6 +257,8 @@ class GlobalRuntime:
             StableDiffusionSafetyChecker,
         )
         from transformers import AutoFeatureExtractor
+
+        patch_onnx_runtime()
 
         if os.getenv("GCLOUD_SA_JSON"):
             self.repository = GoogleStorageRepository(

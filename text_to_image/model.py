@@ -526,10 +526,6 @@ def generate_image(input: InputParameters) -> OutputParameters:
                             [read_image_from_url(ip_adapter.ip_adapter_mask_url)]
                         )
                     elif any_ip_adapter_has_mask:
-                        ip_adapter_masks.append(
-                            create_empty_mask_for_image(ip_adapter_images[-1])
-                        )
-                    else:
                         current_image = (
                             ip_adapter_images[-1][0]
                             if ip_adapter_face_image is None
@@ -542,7 +538,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
                         else:
                             raise ValueError(
                                 "The image for the IP Adapter must be a PIL Image."
-                            )
+                            )                        
 
             if len(ip_adapter_images) > 0:
                 kwargs["ip_adapter_image"] = ip_adapter_images

@@ -880,7 +880,7 @@ def create_pipeline():
                     image_embeds.append(single_image_embeds)
 
             ip_adapter_masks = None
-            if ip_adapter_mask is not None:
+            if ip_adapter_mask is not None and len(ip_adapter_mask) > 0:
                 ip_adapter_masks = self.ip_adapter_mask_processor.preprocess(
                     ip_adapter_mask, height=height, width=width
                 )
@@ -3263,7 +3263,7 @@ def create_pipeline():
                     image_embeds.append(single_image_embeds)
 
             ip_adapter_masks = None
-            if ip_adapter_mask is not None:
+            if ip_adapter_mask is not None and len(ip_adapter_mask) > 0:
                 ip_adapter_masks = self.ip_adapter_mask_processor.preprocess(
                     ip_adapter_mask, height=height, width=width
                 )

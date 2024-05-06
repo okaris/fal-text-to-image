@@ -105,7 +105,12 @@ class IPAdapter(BaseModel):
             before merging it with the base model.
         """,
     )
-
+    unconditional_noising_factor: float = Field(
+        default=0.0,
+        description="""The factor to apply to the unconditional noising of the IP adapter.""",
+        ge=0.0,
+        le=1.0,
+    )
 
 class ControlNet(BaseModel):
     path: str = Field(

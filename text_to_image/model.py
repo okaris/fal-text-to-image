@@ -479,7 +479,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
 
             ip_adapter_images: list[PIL.Image.Image | torch.Tensor] = []
             ip_adapter_masks = []
-
+            ip_adapter_uncond_noise_factors = []
             # if any ip adapter has a mask we need to make an empty one
             any_ip_adapter_has_mask = any(
                 ip_adapter.ip_adapter_mask_url is not None
@@ -492,6 +492,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 if ip_adapter_image_url is not None:
                     if not isinstance(ip_adapter_image_url, list):
                         ip_adapter_image_url = [ip_adapter_image_url]
+                    ip_adapter_uncond_noise_factors.append(ip_adapter.unconditional_noising_factor)
                     ip_adapter_face_image = None
                     if ip_adapter.insight_face_model_path is not None:
 
@@ -547,6 +548,9 @@ def generate_image(input: InputParameters) -> OutputParameters:
 
             if len(ip_adapter_masks) > 0:
                 kwargs["ip_adapter_mask"] = ip_adapter_masks
+
+            if len(ip_adapter_uncond_noise_factors) > 0:
+                kwargs["ip_adapter_unconditional_noising_factor"] = ip_adapter_uncond_noise_factors
 
             print(f"Generating {input.num_images} images...")
             make_inference = partial(pipe, **kwargs)
@@ -712,6 +716,7 @@ class MegaPipeline(
                     weight_name="ip-adapter-instantid.bin",
                     insight_face_model_path="okaris/antelopev2",
                     scale=1.0,
+                    unconditional_noising_factor=0.5,
                 ),
                 IPAdapter(
                     ip_adapter_image_url="https://github.com/okaris/omni-zero/assets/1448702/64dc150b-f683-41b1-be23-b6a52c771584",
@@ -722,6 +727,7 @@ class MegaPipeline(
                         "down": {"block_2": [0.0, 0.0]},  # Composition
                         "up": {"block_0": [0.0, 1.0, 0.0]},  # Style
                     },
+                    unconditional_noising_factor=0.5,
                 ),
                 IPAdapter(
                     ip_adapter_image_url="https://github.com/okaris/omni-zero/assets/1448702/b97d2b29-d35b-4e73-8d86-e3cbe9953e8c",
@@ -732,6 +738,7 @@ class MegaPipeline(
                         "down": {"block_2": [0.0, 1.0]},  # Composition
                         "up": {"block_0": [0.0, 0.0, 0.0]},  # Style
                     },
+                    unconditional_noising_factor=0.5,
                 ),
             ],
             guidance_scale=3.5,

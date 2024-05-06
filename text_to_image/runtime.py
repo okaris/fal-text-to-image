@@ -86,10 +86,7 @@ class IPAdapter(BaseModel):
         ],
     )
     insight_face_model_path: str | None = Field(
-        description="URL or the path to the InsightFace model weights.",
-        examples=[
-            "h94/IP-Adapter",
-        ],
+        description="URL or the path to the InsightFace model weights.", default=None
     )
     scale: float = Field(
         default=1.0,

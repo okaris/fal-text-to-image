@@ -1,3 +1,5 @@
+fal_client
+httpx
 httpx
 image-similarity-measures[speedups]
 pyfftw

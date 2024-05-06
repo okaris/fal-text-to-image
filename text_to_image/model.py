@@ -7,7 +7,6 @@ import fal
 import PIL.Image
 from fal import cached
 from fal.toolkit import File, Image, ImageSizeInput, get_image_size
-from fal.toolkit.image import ImageSize
 from pydantic import BaseModel, Field, root_validator
 
 from text_to_image.runtime import (
@@ -644,71 +643,12 @@ class MegaPipeline(
         initial_input = InputParameters(
             model_name=f"stabilityai/stable-diffusion-xl-base-1.0",
             prompt="Self-portrait oil painting, a beautiful cyborg with golden hair, 8k",
-            noise_strength=0.5,
-            loras=[
-                LoraWeight(
-                    path="https://huggingface.co/latent-consistency/lcm-lora-sdxl/resolve/main/pytorch_lora_weights.safetensors",
-                    scale=1,
-                )
-            ],
-            embeddings=[
-                Embedding(
-                    path="https://storage.googleapis.com/falserverless/style_lora/pimento_embeddings.pti",
-                    tokens=["<s0>", "<s1>"],
-                )
-            ],
-            controlnets=[
-                ControlNet(
-                    path="diffusers/controlnet-canny-sdxl-1.0",
-                    image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
-                    conditioning_scale=1.0,
-                    start_percentage=0.0,
-                    end_percentage=1.0,
-                ),
-                ControlNet(
-                    path="diffusers/controlnet-depth-sdxl-1.0",
-                    image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
-                    mask_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.mask.png",
-                    conditioning_scale=1.0,
-                    start_percentage=0.0,
-                    end_percentage=1.0,
-                ),
-            ],
-            image_encoder_path="h94/IP-Adapter",
-            image_encoder_subfolder="models/image_encoder",
-            ip_adapter=[
-                IPAdapter(
-                    ip_adapter_image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
-                    path="h94/IP-Adapter",
-                    model_subfolder="sdxl_models",
-                    weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
-                    scale=1.0,
-                ),
-                IPAdapter(
-                    ip_adapter_image_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.jpeg",
-                    ip_adapter_mask_url="https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/robot.mask.png",
-                    path="h94/IP-Adapter",
-                    model_subfolder="sdxl_models",
-                    weight_name="ip-adapter-plus_sdxl_vit-h.safetensors",
-                    scale_json={
-                        "down": {"block_2": [0.0, 0.0]},  # Composition
-                        "up": {"block_0": [0.0, 1.0, 0.0]},  # Style
-                    },
-                ),
-            ],
-            guidance_scale=7.5,
-            num_inference_steps=20,
-            num_images=2,
-            seed=42,
-            scheduler="Euler A",
-            image_size=ImageSize(width=1024, height=1024),
         )
 
         result = generate_image(initial_input)
         print(result)
 
         self.ready = True
-
         return
 
     @fal.endpoint("/health")

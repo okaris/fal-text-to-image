@@ -416,7 +416,6 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 "num_inference_steps": input.num_inference_steps,
                 "guidance_scale": input.guidance_scale,
                 "generator": torch.Generator("cuda").manual_seed(seed),
-                "seed": seed,
             }
 
             if image_size is not None and input.image_url is None:

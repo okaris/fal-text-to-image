@@ -475,8 +475,9 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 kwargs["strength"] = input.noise_strength
 
             if image_size is None:
-                raise ValueError(
-                    "The image size must be provided if the image URL is not provided."
+                raise invalid_data_error(
+                    ["image_size"],
+                    "The image size must be provided if the image URL is not provided.",
                 )
 
             if input.controlnets:

@@ -373,6 +373,49 @@ def wrap_excs():
         raise HTTPException(422, detail=str(exc))
 
 
+def align_image_to_dimensions(width, height, image2):
+    """
+    Resize and crop the given image to match specified width and height by
+    scaling to aspect fill and then center cropping the extra parts.
+
+    Args:
+    width (int): Target width to align the image to.
+    height (int): Target height to align the image to.
+    image2 (PIL.Image): Image to be aligned.
+
+    Returns:
+    PIL.Image: The aligned image.
+    """
+    from PIL import Image
+
+    # Calculate the aspect ratio of the image to align
+    aspect_ratio = image2.width / image2.height
+
+    # Calculate dimensions to aspect fill
+    if width / height > aspect_ratio:
+        # Target dimensions are wider relative to its height than the image
+        fill_height = height
+        fill_width = int(fill_height * aspect_ratio)
+    else:
+        # Target dimensions are taller relative to its width than the image
+        fill_width = width
+        fill_height = int(fill_width / aspect_ratio)
+
+    # Resize the image to fill dimensions
+    filled_image = image2.resize((fill_width, fill_height), Image.Resampling.LANCZOS)
+
+    # Calculate top-left corner of crop box to center crop
+    left = (fill_width - width) / 2
+    top = (fill_height - height) / 2
+    right = left + width
+    bottom = top + height
+
+    # Crop the filled image to match the target size
+    cropped_image = filled_image.crop((int(left), int(top), int(right), int(bottom)))
+
+    return cropped_image
+
+
 def generate_image(input: InputParameters) -> OutputParameters:
     """
     A single API for text-to-image, built on [fal](https://fal.ai) that supports
@@ -422,6 +465,20 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 kwargs["width"] = image_size.width
                 kwargs["height"] = image_size.height
 
+            if input.image_url is not None:
+                print("reading noise image", input.image_url)
+                image_for_noise = read_image_from_url(input.image_url)
+                image_size = ImageSize(
+                    width=image_for_noise.width, height=image_for_noise.height
+                )
+                kwargs["image_for_noise"] = image_for_noise
+                kwargs["strength"] = input.noise_strength
+
+            if image_size is None:
+                raise ValueError(
+                    "The image size must be provided if the image URL is not provided."
+                )
+
             if input.controlnets:
                 kwargs["controlnet_guess_mode"] = input.controlnet_guess_mode
                 kwargs["controlnet_conditioning_scale"] = [
@@ -449,6 +506,9 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 for controlnet in input.controlnets:
                     # TODO replace with something that doesn't download the image every time
                     controlnet_image = read_image_from_url(controlnet.image_url)
+                    controlnet_image = align_image_to_dimensions(
+                        image_size.width, image_size.height, controlnet_image
+                    )
                     controlnet_images.append(controlnet_image)
                     if controlnet.mask_url is not None:
                         controlnet_mask = read_image_from_url(controlnet.mask_url)
@@ -470,11 +530,6 @@ def generate_image(input: InputParameters) -> OutputParameters:
             kwargs["tile_stride_width"] = input.tile_stride_width
             kwargs["debug_latents"] = input.debug_latents
             kwargs["debug_per_pass_latents"] = input.debug_per_pass_latents
-
-            if input.image_url is not None:
-                print("reading noise image", input.image_url)
-                kwargs["image_for_noise"] = read_image_from_url(input.image_url)
-                kwargs["strength"] = input.noise_strength
 
             ip_adapter_images: list[PIL.Image.Image | torch.Tensor] = []
             ip_adapter_masks = []
@@ -699,7 +754,8 @@ class MegaPipeline(
                 ),
                 ControlNet(
                     path="okaris/zoe-depth-controlnet-xl",
-                    image_url="https://github.com/okaris/omni-zero/assets/1448702/977b7ab0-8b88-430d-8b7c-a415d47fd1c0",
+                    # image_url="https://github.com/okaris/omni-zero/assets/1448702/977b7ab0-8b88-430d-8b7c-a415d47fd1c0",
+                    image_url="https://storage.googleapis.com/isolate-dev-hot-rooster_toolkit_bucket/github_110602490/ab59753a67da4ffcafd5c48f413d524c_456b9542c5b4494289a143ccd0afb96b.png?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=gke-service-account%40isolate-dev-hot-rooster.iam.gserviceaccount.com%2F20240507%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20240507T174114Z&X-Goog-Expires=604800&X-Goog-SignedHeaders=host&X-Goog-Signature=57373caa4c6c75bfafbe4e3c71223e054b1beadc508bc35ab4aa326a2d64682792efa5616baf6919fc27e3706f58631d6c70870af6c411d14f73bb3206a07fcc592ebf01a2f97a3f821c19a2522a3d5e623e83561fb67c89ea2aead0c2d12e0c4f7c740bfca12e15dfc52c18c8b69cb1442e1b93071764c22231923880fc55e94122a32131fcd523d8b5e1cb205582f447b893c02b488170d3a42b76e7bc52feeabf4ac6d1e1091193372718589f07fdbad5a135379897c69b8ee23a41aaa77e32b7342ff7e97a3d1026ab2a8d8df27095bfb2d5231030c4aaee2b1e004c784977c98e40f9865fbb186b7149fd4f2e88b64b144044b502cdd0933869138cdfeb",
                     conditioning_scale=0.5,
                     start_percentage=0.0,
                     end_percentage=1.0,

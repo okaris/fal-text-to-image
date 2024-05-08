@@ -507,10 +507,27 @@ def generate_image(input: InputParameters) -> OutputParameters:
                 for controlnet in input.controlnets:
                     # TODO replace with something that doesn't download the image every time
                     controlnet_image = read_image_from_url(controlnet.image_url)
+
                     controlnet_image = align_image_to_dimensions(
                         image_size.width, image_size.height, controlnet_image
                     )
+
+                    if controlnet.image_preprocessor is not None:
+                        if controlnet.image_preprocessor == "face_kps":
+                            controlnet_image = session.preprocessor.process(
+                                controlnet_image, "face_kps"
+                            )["kps_image"]
+                        else:
+                            controlnet_image = session.preprocessor.process(
+                                controlnet_image, controlnet.image_preprocessor
+                            )
+
+                        if controlnet_image.size != (image_size.width, image_size.height):
+                            controlnet_image = align_image_to_dimensions(
+                                image_size.width, image_size.height, controlnet_image
+                            )
                     controlnet_images.append(controlnet_image)
+
                     if controlnet.mask_url is not None:
                         controlnet_mask = read_image_from_url(controlnet.mask_url)
                         controlnet_masks.append(controlnet_mask)
@@ -523,6 +540,8 @@ def generate_image(input: InputParameters) -> OutputParameters:
                     kwargs["image"] = controlnet_images
 
                 if len(controlnet_masks) > 0:
+                    for i, mask in enumerate(controlnet_masks):
+                        print("Mask size before aligning", mask.size)
                     kwargs["control_mask"] = controlnet_masks
 
             kwargs["tile_window_height"] = input.tile_height
@@ -551,7 +570,7 @@ def generate_image(input: InputParameters) -> OutputParameters:
                         ip_adapter.unconditional_noising_factor
                     )
                     ip_adapter_face_image = None
-                    if ip_adapter.insight_face_model_path is not None:
+                    if ip_adapter.face_embedding_model_path is not None:
 
                         # We only support a single image for identity extraction for now
                         if len(ip_adapter_image_url) > 1:
@@ -561,15 +580,10 @@ def generate_image(input: InputParameters) -> OutputParameters:
                         image = read_image_from_url(ip_adapter_image_url[0])
                         ip_adapter_face_image = image
                         image = cv2.cvtColor(np.asarray(image), cv2.COLOR_BGR2RGB)
-                        faces = pipe.face_analysis.get(image)
-                        largest_face = sorted(
-                            faces,
-                            key=lambda x: x["bbox"][2] * x["bbox"][3],
-                            reverse=True,
-                        )[0]
-                        face_embedding = torch.tensor(largest_face["embedding"]).to(
-                            "cuda"
-                        )
+                        face = session.preprocessor.process(
+                            image, "face_kps"
+                        )  # assumes antelopev2 model TODO: Fix this
+                        face_embedding = torch.tensor(face["embedding"]).to("cuda")
                         ip_adapter_images.append(face_embedding)
                     else:
                         ip_adapter_images.append(
@@ -735,6 +749,7 @@ class MegaPipeline(
         "opencv-python",
         "numpy",
         "onnxruntime-gpu",
+        "controlnet_aux",
     ]
 
     def setup(self) -> None:
@@ -747,7 +762,8 @@ class MegaPipeline(
             controlnets=[
                 ControlNet(
                     path="okaris/face-controlnet-xl",
-                    image_url="https://github.com/okaris/omni-zero/assets/1448702/da96c849-5e75-4b23-9d5a-a44311509626",
+                    image_url="https://github.com/okaris/omni-zero/assets/1448702/b97d2b29-d35b-4e73-8d86-e3cbe9953e8c",
+                    image_preprocessor="face_kps",
                     conditioning_scale=1.0,
                     start_percentage=0.0,
                     end_percentage=1.0,
@@ -755,8 +771,8 @@ class MegaPipeline(
                 ),
                 ControlNet(
                     path="okaris/zoe-depth-controlnet-xl",
-                    # image_url="https://github.com/okaris/omni-zero/assets/1448702/977b7ab0-8b88-430d-8b7c-a415d47fd1c0",
-                    image_url="https://storage.googleapis.com/isolate-dev-hot-rooster_toolkit_bucket/github_110602490/ab59753a67da4ffcafd5c48f413d524c_456b9542c5b4494289a143ccd0afb96b.png?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=gke-service-account%40isolate-dev-hot-rooster.iam.gserviceaccount.com%2F20240507%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20240507T174114Z&X-Goog-Expires=604800&X-Goog-SignedHeaders=host&X-Goog-Signature=57373caa4c6c75bfafbe4e3c71223e054b1beadc508bc35ab4aa326a2d64682792efa5616baf6919fc27e3706f58631d6c70870af6c411d14f73bb3206a07fcc592ebf01a2f97a3f821c19a2522a3d5e623e83561fb67c89ea2aead0c2d12e0c4f7c740bfca12e15dfc52c18c8b69cb1442e1b93071764c22231923880fc55e94122a32131fcd523d8b5e1cb205582f447b893c02b488170d3a42b76e7bc52feeabf4ac6d1e1091193372718589f07fdbad5a135379897c69b8ee23a41aaa77e32b7342ff7e97a3d1026ab2a8d8df27095bfb2d5231030c4aaee2b1e004c784977c98e40f9865fbb186b7149fd4f2e88b64b144044b502cdd0933869138cdfeb",
+                    image_url="https://github.com/okaris/omni-zero/assets/1448702/b97d2b29-d35b-4e73-8d86-e3cbe9953e8c",
+                    image_preprocessor="depth_zoe",
                     conditioning_scale=0.5,
                     start_percentage=0.0,
                     end_percentage=1.0,
@@ -770,7 +786,7 @@ class MegaPipeline(
                     path="okaris/ip-adapter-instantid",
                     model_subfolder=None,
                     weight_name="ip-adapter-instantid.bin",
-                    insight_face_model_path="okaris/antelopev2",
+                    face_embedding_model_path="okaris/antelopev2",
                     scale=1.0,
                     unconditional_noising_factor=0.5,
                 ),

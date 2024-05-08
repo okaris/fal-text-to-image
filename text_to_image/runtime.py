@@ -17,7 +17,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from text_to_image.pipeline import create_pipeline
-
+from text_to_image.preprocess import Preprocessor
 
 class LoraWeight(BaseModel):
     path: str = Field(
@@ -85,8 +85,8 @@ class IPAdapter(BaseModel):
             "ip-adapter-plus_sdxl_vit-h.safetensors",
         ],
     )
-    insight_face_model_path: str | None = Field(
-        description="URL or the path to the InsightFace model weights.", default=None
+    face_embedding_model_path: str | None = Field(
+        description="URL or the path to the face_embedding model weights.", default=None
     )
     scale: float = Field(
         default=1.0,
@@ -122,6 +122,38 @@ class ControlNet(BaseModel):
         examples=[
             "https://storage.googleapis.com/falserverless/model_tests/controlnet_sdxl/canny-edge.resized.jpg",
         ],
+    )
+    image_preprocessor: str | None = Field(
+        description="The image preprocessor to use for the controlnet.",
+        choices=[
+            "canny",
+            "depth_midas",
+            "depth_zoe",
+            "face_kps",
+            "depth_leres",
+            "depth_leres++",
+            "lineart_anime",
+            "lineart_coarse",
+            "lineart_realistic",
+            "mediapipe_face",
+            "mlsd",
+            "normal_bae",
+            "normal_midas",
+            "openpose",
+            "openpose_face",
+            "openpose_faceonly",
+            "openpose_full",
+            "openpose_hand",
+            "scribble_hed",
+            "scribble_pidinet",
+            "shuffle",
+            "softedge_hed",
+            "softedge_hedsafe",
+            "softedge_pidinet",
+            "softedge_pidsafe",
+            "dwpose",
+        ],
+        default=None,
     )
     mask_url: str | None = Field(
         default=None,
@@ -168,8 +200,8 @@ def download_or_hf_key(path: str) -> str:
     return path
 
 
-INSIGHTFACE_MODEL_CACHE_PATH = Path("/data")
-INSIGHTFACE_MODEL_DOWNLOAD_PATH = "/data/models"
+FACE_EMBEDDING_MODEL_CACHE_PATH = Path("/data")
+FACE_EMBEDDING_MODEL_DOWNLOAD_PATH = "/data/models"
 
 DeviceType = Literal["cpu", "cuda"]
 
@@ -223,27 +255,6 @@ class Model:
         return self.pipeline.device.type
 
 
-def patch_onnx_runtime(
-    inter_op_num_threads: int = 16,
-    intra_op_num_threads: int = 16,
-    omp_num_threads: int = 16,
-):
-    import os
-
-    import onnxruntime as ort
-
-    os.environ["OMP_NUM_THREADS"] = str(omp_num_threads)
-
-    _default_session_options = ort.capi._pybind_state.get_default_session_options()
-
-    def get_default_session_options_new():
-        _default_session_options.inter_op_num_threads = inter_op_num_threads
-        _default_session_options.intra_op_num_threads = intra_op_num_threads
-        return _default_session_options
-
-    ort.capi._pybind_state.get_default_session_options = get_default_session_options_new
-
-
 @dataclass
 class GlobalRuntime:
     models: dict[tuple[str, ...], Model] = field(default_factory=dict)
@@ -257,7 +268,7 @@ class GlobalRuntime:
         )
         from transformers import AutoFeatureExtractor
 
-        patch_onnx_runtime()
+        self.preprocessor = Preprocessor()
 
         if os.getenv("GCLOUD_SA_JSON"):
             self.repository = GoogleStorageRepository(
@@ -469,52 +480,52 @@ class GlobalRuntime:
                     detail=f"Failed to download IP adapter: {e}",
                 )
 
-            # try to download the insightface model if specified
+            # try to download the face_embedding model if specified
 
-            insightface_model_name = None
+            face_embedding_model_name = None
             try:
-                if ip_adapter.insight_face_model_path:
+                if ip_adapter.face_embedding_model_path:
                     # check if it is a url
-                    if ip_adapter.insight_face_model_path.startswith("https://"):
-                        print("Assuming insightface model path is a URL")
-                        insightface_path = download_model_weights(
-                            ip_adapter.insight_face_model_path,
+                    if ip_adapter.face_embedding_model_path.startswith("https://"):
+                        print("Assuming face_embedding model path is a URL")
+                        face_embedding_path = download_model_weights(
+                            ip_adapter.face_embedding_model_path,
                         )
-                        insightface_model_dir = Path(insightface_path).parent
-                        insightface_model_name = Path(insightface_path).name
-                    elif ip_adapter.insight_face_model_path.startswith("http://"):
+                        face_embedding_model_dir = Path(face_embedding_path).parent
+                        face_embedding_model_name = Path(face_embedding_path).name
+                    elif ip_adapter.face_embedding_model_path.startswith("http://"):
                         # raise an error if the path is an http link
                         raise HTTPException(
                             422,
-                            detail="HTTP links are not supported for insightface model weights. Please use HTTPS links or local paths.",
+                            detail="HTTP links are not supported for face_embedding model weights. Please use HTTPS links or local paths.",
                         )
                     # see if there is a single forward slash in the path
-                    elif ip_adapter.insight_face_model_path.count("/") == 1:
-                        insightface_model_name = (
-                            ip_adapter.insight_face_model_path.split("/")[-1]
+                    elif ip_adapter.face_embedding_model_path.count("/") == 1:
+                        face_embedding_model_name = (
+                            ip_adapter.face_embedding_model_path.split("/")[-1]
                         )
-                        insightface_download_dir = f"{INSIGHTFACE_MODEL_DOWNLOAD_PATH}/{insightface_model_name}"
+                        face_embedding_download_dir = f"{FACE_EMBEDDING_MODEL_DOWNLOAD_PATH}/{face_embedding_model_name}"
                         snapshot_download(
-                            ip_adapter.insight_face_model_path,
-                            local_dir=insightface_download_dir,
+                            ip_adapter.face_embedding_model_path,
+                            local_dir=face_embedding_download_dir,
                         )
 
-                        insightface_model_dir = INSIGHTFACE_MODEL_CACHE_PATH
+                        face_embedding_model_dir = FACE_EMBEDDING_MODEL_CACHE_PATH
                     else:
                         # assume it is a model name
-                        insightface_model_name = ip_adapter.insight_face_model_path
-                        insightface_model_dir = INSIGHTFACE_MODEL_CACHE_PATH
+                        face_embedding_model_name = ip_adapter.face_embedding_model_path
+                        face_embedding_model_dir = FACE_EMBEDDING_MODEL_CACHE_PATH
 
             except Exception as e:
                 raise HTTPException(
                     422,
-                    detail=f"Failed to download insightface model: {e}",
+                    detail=f"Failed to download face_embedding model: {e}",
                 )
 
-            if insightface_model_name:
+            if face_embedding_model_name:
                 app = FaceAnalysis(
-                    name=insightface_model_name,
-                    root=insightface_model_dir,
+                    name=face_embedding_model_name,
+                    root=face_embedding_model_dir,
                     providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
                 )
                 app.prepare(ctx_id=0, det_size=(640, 640))

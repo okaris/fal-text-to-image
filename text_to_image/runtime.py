@@ -392,7 +392,6 @@ class GlobalRuntime:
     ) -> Iterator[None]:
         import torch
         from huggingface_hub import snapshot_download
-        from insightface.app import FaceAnalysis
         from transformers import CLIPVisionModelWithProjection
 
         if not ip_adapters or len(ip_adapters) == 0:
@@ -480,57 +479,6 @@ class GlobalRuntime:
                     422,
                     detail=f"Failed to download IP adapter: {e}",
                 )
-
-            # try to download the face_embedding model if specified
-
-            face_embedding_model_name = None
-            try:
-                if ip_adapter.face_embedding_model_path:
-                    # check if it is a url
-                    if ip_adapter.face_embedding_model_path.startswith("https://"):
-                        print("Assuming face_embedding model path is a URL")
-                        face_embedding_path = download_model_weights(
-                            ip_adapter.face_embedding_model_path,
-                        )
-                        face_embedding_model_dir = Path(face_embedding_path).parent
-                        face_embedding_model_name = Path(face_embedding_path).name
-                    elif ip_adapter.face_embedding_model_path.startswith("http://"):
-                        # raise an error if the path is an http link
-                        raise HTTPException(
-                            422,
-                            detail="HTTP links are not supported for face_embedding model weights. Please use HTTPS links or local paths.",
-                        )
-                    # see if there is a single forward slash in the path
-                    elif ip_adapter.face_embedding_model_path.count("/") == 1:
-                        face_embedding_model_name = (
-                            ip_adapter.face_embedding_model_path.split("/")[-1]
-                        )
-                        face_embedding_download_dir = f"{FACE_EMBEDDING_MODEL_DOWNLOAD_PATH}/{face_embedding_model_name}"
-                        snapshot_download(
-                            ip_adapter.face_embedding_model_path,
-                            local_dir=face_embedding_download_dir,
-                        )
-
-                        face_embedding_model_dir = FACE_EMBEDDING_MODEL_CACHE_PATH
-                    else:
-                        # assume it is a model name
-                        face_embedding_model_name = ip_adapter.face_embedding_model_path
-                        face_embedding_model_dir = FACE_EMBEDDING_MODEL_CACHE_PATH
-
-            except Exception as e:
-                raise HTTPException(
-                    422,
-                    detail=f"Failed to download face_embedding model: {e}",
-                )
-
-            if face_embedding_model_name:
-                app = FaceAnalysis(
-                    name=face_embedding_model_name,
-                    root=face_embedding_model_dir,
-                    providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-                )
-                app.prepare(ctx_id=0, det_size=(640, 640))
-                pipe.face_analysis = app
 
             ip_adapter_scale: float | dict | None = None
             if ip_adapter.scale_json is not None:

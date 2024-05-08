@@ -4279,6 +4279,8 @@ def create_pipeline():
                         # repeat prompt_embeds for batch
                         # not sure why this isn't used yet
                         prompt_embeds_input = torch.cat([prompt_embeds] * vb_size)
+                        down_block_res_samples = None
+                        mid_block_res_sample = None
 
                         # controlnet(s) inference
                         if guess_mode and self.do_classifier_free_guidance:
@@ -4342,7 +4344,6 @@ def create_pipeline():
                                     ],
                                     conditioning_scale=cond_scale[controlnet_index],
                                     guess_mode=guess_mode,
-                                    added_cond_kwargs=controlnet_added_cond_kwargs,
                                     return_dict=False,
                                 )
 

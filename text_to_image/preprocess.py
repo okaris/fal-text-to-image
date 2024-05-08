@@ -1,10 +1,10 @@
-from io import BytesIO
-import PIL.Image
 from pathlib import Path
 
 import fal
-from fal.toolkit import Image, download_model_weights
+import PIL.Image
+from fal.toolkit import download_model_weights
 from fastapi import HTTPException
+
 
 def patch_onnx_runtime(
     inter_op_num_threads: int = 16,
@@ -12,6 +12,7 @@ def patch_onnx_runtime(
     omp_num_threads: int = 16,
 ):
     import os
+
     import onnxruntime as ort
 
     os.environ["OMP_NUM_THREADS"] = str(omp_num_threads)
@@ -24,6 +25,7 @@ def patch_onnx_runtime(
         return _default_session_options
 
     ort.capi._pybind_state.get_default_session_options = get_default_session_options_new
+
 
 def draw_kps(
     image_pil,
@@ -106,25 +108,26 @@ def checksum(
 
     return m.hexdigest()
 
-class Preprocessor():
 
+class Preprocessor:
     def __init__(self):
         patch_onnx_runtime()
 
     @fal.cached
     def load_model(self, processor_id: str) -> None:
         from controlnet_aux.processor import Processor
-        return Processor(processor_id, {
-            "detect_resolution": 1024,
-            "image_resolution": 1024
-        })
-    
+
+        return Processor(
+            processor_id, {"detect_resolution": 1024, "image_resolution": 1024}
+        )
+
     @fal.cached
     def load_face_detection_model(self, model_url) -> None:
-       
+
         import os
-        from insightface.app import FaceAnalysis
+
         import insightface.utils.storage
+        from insightface.app import FaceAnalysis
 
         insightface.utils.storage.BASE_REPO_URL = (
             "https://storage.googleapis.com/fal-models/insightface"
@@ -179,7 +182,7 @@ class Preprocessor():
             )
 
         return app
-    
+
     def run_face_detection(
         self,
         image,
@@ -187,14 +190,13 @@ class Preprocessor():
         det_size_width: int = 640,
         det_size_height: int = 640,
         max_face_num: int = 1,
-        sorting: str = "largest-to-smallest"
+        sorting: str = "largest-to-smallest",
     ) -> dict:
         import os
 
         import cv2
         import numpy as np
         import torch
-        from safetensors.torch import save_file
 
         output_dir = "/data/face_embeddings/"
         if output_dir is not None:
@@ -213,7 +215,9 @@ class Preprocessor():
                 )
 
             face_detections = []
-            zero_image = np.zeros((cv2_image.shape[0], cv2_image.shape[1], 3), dtype=np.uint8)
+            zero_image = np.zeros(
+                (cv2_image.shape[0], cv2_image.shape[1], 3), dtype=np.uint8
+            )
             for face in faces:
                 kps_image = draw_kps(zero_image, face.kps)
 
@@ -242,7 +246,7 @@ class Preprocessor():
                 face_detections = sorted(face_detections, key=lambda x: -x["bbox"][0])
 
             top_face = face_detections[0]
-            face_detections = face_detections[: max_face_num]
+            face_detections = face_detections[:max_face_num]
 
         output = {
             "faces": face_detections,
@@ -253,7 +257,7 @@ class Preprocessor():
     def process(self, image: PIL.Image.Image, processor_id) -> PIL.Image.Image:
         if processor_id == "face_kps":
             processor = self.load_face_detection_model("antelopev2")
-            processed_image = self.run_face_detection(image, processor)["top_face"] 
+            processed_image = self.run_face_detection(image, processor)["top_face"]
         else:
             processor = self.load_model(processor_id)
             processed_image = processor(image, to_pil=True)

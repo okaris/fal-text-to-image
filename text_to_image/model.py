@@ -522,7 +522,10 @@ def generate_image(input: InputParameters) -> OutputParameters:
                                 controlnet_image, controlnet.image_preprocessor
                             )
 
-                        if controlnet_image.size != (image_size.width, image_size.height):
+                        if controlnet_image.size != (
+                            image_size.width,
+                            image_size.height,
+                        ):
                             controlnet_image = align_image_to_dimensions(
                                 image_size.width, image_size.height, controlnet_image
                             )

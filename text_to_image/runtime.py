@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from text_to_image.pipeline import create_pipeline
 from text_to_image.preprocess import Preprocessor
 
+
 class LoraWeight(BaseModel):
     path: str = Field(
         description="URL or the path to the LoRA weights.",
